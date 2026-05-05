@@ -1,0 +1,997 @@
+"""Trade Tracking tab for EVE Market Scout - ESI integration and profit tracking."""
+
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
+from typing import Callable, Optional
+
+from esi_auth import ESIAuth
+from esi_wallet import ESIWallet
+from esi_skills import ESISkills, ESIStandings
+from trade_tracker import TradeTracker, TrackedTrade
+from calculate import (
+    TradingSkills, DEFAULT_SKILLS, format_isk, get_skill_summary,
+    load_cached_skills
+)
+from calculate_trades import calculate_trade_fees, calculate_trade_break_even
+
+# Import dialog classes
+from gui_tracking_dialogs import (
+    RecordBuyDialog, RecordListingDialog,
+    RecordRelistDialog, RecordSaleDialog, TradeDetailsDialog
+)
+
+# Import sync manager
+from gui_tracking_sync import ESISyncManager
+
+# Import panel components
+from gui_tracking_panels import SummaryPanel, StandingsBar
+from gui_tree_utils import sort_treeview
+
+# Import underbid monitoring
+from underbid_monitor import UnderbidMonitor
+from tk_queue import submit
+
+
+# Column configuration for trades treeview
+TRADE_COLUMNS = ("item", "status", "qty", "buy", "sell", "profit", "break_even", "fees")
+TRADE_COL_TITLES = {
+    "item": "Item",
+    "status": "Status",
+    "qty": "Qty",
+    "buy": "Buy Price",
+    "sell": "Sell Price",
+    "profit": "Profit",
+    "break_even": "Break Even",
+    "fees": "Total Fees"
+}
+TRADE_NUMERIC_COLS = {"qty", "buy", "sell", "profit", "break_even", "fees"}
+
+
+class TrackingTabManager:
+    """Manages the Trade Tracking tab with ESI integration."""
+
+    def __init__(self, notebook: ttk.Notebook, set_status: Callable[[str], None]):
+        self.notebook = notebook
+        self.set_status = set_status
+        
+        # Selected hub (can be changed by gui_main)
+        self.selected_hub = "amarr"
+        
+        # Hub overrides for cross-hub mode (set by gui_main)
+        self._sell_hub_override: str = None
+        self._buy_hub_override: str = None
+        
+        # Callback for when characters change (set by gui_main)
+        self._on_characters_changed: Callable = None
+        
+        # ESI components
+        self.auth = ESIAuth()
+        self.wallet: Optional[ESIWallet] = None
+        self.esi_skills: Optional[ESISkills] = None
+        self.esi_standings: Optional[ESIStandings] = None
+        self.skills: TradingSkills = DEFAULT_SKILLS
+        self.buyer_skills: TradingSkills = DEFAULT_SKILLS  # For cross-hub
+        
+        # Trade tracker (with skills for accurate fee calcs)
+        self.tracker = TradeTracker(self.skills)
+        
+        # Sync manager
+        self.sync_manager = ESISyncManager(self.tracker, set_status)
+        
+        # Underbid monitoring
+        self.underbid_monitor = UnderbidMonitor()
+        
+        # Stock market tab reference (set by gui_main after creation)
+        self.stock_market_tab = None
+        self.market_orders_cache: list[dict] = []  # Cached market orders for underbid checks
+        
+        # Sort state tracking
+        self.sort_state: dict[str, bool] = {}
+        
+        if self.auth.is_authenticated:
+            self.wallet = ESIWallet(self.auth)
+            self.esi_skills = ESISkills(self.auth)
+            self.esi_standings = ESIStandings(self.auth, self.esi_skills)
+            self.sync_manager.set_wallet(self.wallet)
+            # Load cached skills from JSON (no ESI call - skills rarely change)
+            cached = load_cached_skills(self.selected_hub, "seller")
+            if cached is not DEFAULT_SKILLS:
+                self.skills = cached
+                self.tracker.set_skills(self.skills)
+            if self.auth.has_buyer:
+                cached_buyer = load_cached_skills(self.selected_hub, "buyer")
+                if cached_buyer is not DEFAULT_SKILLS:
+                    self.buyer_skills = cached_buyer
+        
+        self._create_tab()
+        
+        # Wire up sync manager UI refs
+        self.sync_manager.set_ui_refs(
+            self.frame,
+            self.refresh_btn,
+            self.countdown_label,
+            self._on_esi_refresh
+        )
+        
+        # Wire up underbid monitor to sync manager
+        self.sync_manager.set_underbid_monitor(self.underbid_monitor, self.selected_hub)
+        
+        # Wire up stock market holdings sync (callback set after stock_market_tab assigned)
+        # This gets called by gui_main after creation
+        
+        # Start auto-refresh if authenticated
+        if self.auth.is_authenticated and self.auto_refresh_var.get():
+            self.sync_manager.schedule_auto_refresh()
+    
+    def _setup_stock_market_sync(self):
+        """Wire up stock market holdings sync after stock_market_tab is assigned."""
+        if self.stock_market_tab:
+            # Sync active orders (for order count display)
+            self.sync_manager.set_stock_market_callback(
+                self.stock_market_tab.sync_orders_to_holdings
+            )
+            # Sync wallet transactions (for buy/sell tracking)
+            self.sync_manager.set_wallet_sync_callback(
+                self.stock_market_tab.sync_wallet_to_holdings
+            )
+
+    def _fetch_skills_and_standings(self, slot: str = "seller", hub: str = None):
+        """Fetch skills and standings from ESI, combine into TradingSkills.
+        
+        Args:
+            slot: "seller" or "buyer"
+            hub: Hub key for standings lookup (defaults to self.selected_hub)
+        """
+        if not self.esi_skills:
+            return
+        
+        fetched_skills = self.esi_skills.fetch_skills(slot=slot, force_refresh=True)
+        if not fetched_skills:
+            return
+        
+        station_standing = 0.0
+        faction_standing = 0.0
+        
+        hub_key = hub or self.selected_hub
+        
+        if self.esi_standings:
+            corp_standing, fac_standing = self.esi_standings.get_standings_for_hub(hub_key, slot=slot)
+            station_standing = corp_standing
+            faction_standing = fac_standing
+            char_name = self.auth.seller_name if slot == "seller" else self.auth.buyer_name
+            print(f"ESI Standings for {char_name} ({hub_key}): Station={station_standing:.2f}, Faction={faction_standing:.2f}")
+        
+        skills_obj = TradingSkills(
+            broker_relations=fetched_skills.broker_relations,
+            accounting=fetched_skills.accounting,
+            advanced_broker_relations=fetched_skills.advanced_broker_relations,
+            station_standing=station_standing,
+            faction_standing=faction_standing
+        )
+        
+        if slot == "buyer":
+            self.buyer_skills = skills_obj
+            print(f"Buyer skills updated: BR={skills_obj.broker_relations}, Acc={skills_obj.accounting}, ABR={skills_obj.advanced_broker_relations}")
+        else:
+            self.skills = skills_obj
+            self.tracker.set_skills(self.skills)
+            print(f"Seller skills updated: BR={skills_obj.broker_relations}, Acc={skills_obj.accounting}, ABR={skills_obj.advanced_broker_relations}")
+    
+    def refresh_all_character_data(self, sell_hub: str = None, buy_hub: str = None):
+        """Refresh skills and standings for both characters.
+        
+        Now delegates to _refresh_skills_async to avoid blocking main thread.
+        
+        Args:
+            sell_hub: Hub key for seller standings (defaults to selected_hub)
+            buy_hub: Hub key for buyer standings (defaults to sell_hub for same-station)
+        """
+        # Store hub overrides for the async method to use
+        if sell_hub:
+            self._sell_hub_override = sell_hub
+        if buy_hub:
+            self._buy_hub_override = buy_hub
+        
+        # Delegate to async version
+        self._refresh_skills_async()
+    
+    def _save_cached_skills(self):
+        """Save skills + standings for all hubs to JSON for Stock Market use."""
+        if not self.esi_standings:
+            return
+        
+        from calculate import save_cached_skills
+        
+        # Collect standings for all 5 hubs
+        hub_keys = ["amarr", "jita", "dodixie", "hek", "rens"]
+        
+        seller_standings = {}
+        for hub in hub_keys:
+            corp, faction = self.esi_standings.get_standings_for_hub(hub, slot="seller")
+            seller_standings[hub] = (corp, faction)
+        
+        buyer_standings = None
+        if self.auth.has_buyer:
+            buyer_standings = {}
+            for hub in hub_keys:
+                corp, faction = self.esi_standings.get_standings_for_hub(hub, slot="buyer")
+                buyer_standings[hub] = (corp, faction)
+        
+        save_cached_skills(
+            seller_skills=self.skills,
+            seller_standings=seller_standings,
+            seller_name=self.auth.seller_name if hasattr(self.auth, 'seller_name') else "",
+            buyer_skills=self.buyer_skills if self.auth.has_buyer else None,
+            buyer_standings=buyer_standings,
+            buyer_name=self.auth.buyer_name if hasattr(self.auth, 'buyer_name') else "",
+        )
+
+    def _create_tab(self):
+        """Create the tracking tab."""
+        self.frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.frame, text="Tracking")
+        
+        # Top bar - auth status and controls
+        self._create_auth_bar()
+        
+        # Standings bar
+        self.standings_bar = StandingsBar(
+            self.frame,
+            on_standings_changed=self._on_standings_changed,
+            on_fees_changed=self._on_fees_changed
+        )
+        
+        # Main content - split into left (summary) and right (trades list)
+        self.content_frame = ttk.Frame(self.frame)
+        self.content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.summary_panel = SummaryPanel(self.content_frame)
+        self._create_trades_panel()
+        
+        # Initial display update
+        self._update_auth_display()
+        self.standings_bar.update(self.skills)
+        self._refresh_display()
+
+    def _create_auth_bar(self):
+        """Create authentication status bar with dual character support."""
+        auth_frame = ttk.Frame(self.frame, padding=5)
+        auth_frame.pack(fill=tk.X)
+        
+        # === Row 1: Seller (Primary) Character ===
+        seller_row = ttk.Frame(auth_frame)
+        seller_row.pack(fill=tk.X, pady=(0, 2))
+        
+        ttk.Label(seller_row, text="Seller:", font=("Segoe UI", 9, "bold"), width=6).pack(side=tk.LEFT)
+        
+        self.seller_status = ttk.Label(
+            seller_row, text="Not logged in",
+            font=("Segoe UI", 9), width=25, anchor=tk.W
+        )
+        self.seller_status.pack(side=tk.LEFT, padx=5)
+        
+        self.seller_logout_btn = ttk.Button(
+            seller_row, text="Logout",
+            command=lambda: self._logout("seller"), width=7
+        )
+        self.seller_logout_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.seller_login_btn = ttk.Button(
+            seller_row, text="Login",
+            command=lambda: self._show_login_dialog("seller"), width=7
+        )
+        self.seller_login_btn.pack(side=tk.LEFT, padx=2)
+        
+        # Trade Refresh button (wallet, orders, transactions)
+        self.refresh_btn = ttk.Button(
+            seller_row, text="Trade Refresh",
+            command=lambda: self.sync_manager.refresh_esi_data(), width=14
+        )
+        self.refresh_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Refresh Skills button (manual, not on ESI cycle)
+        self.skills_btn = ttk.Button(
+            seller_row, text="Refresh Skills",
+            command=self._refresh_skills_async, width=12
+        )
+        self.skills_btn.pack(side=tk.LEFT, padx=2)
+        
+        # Auto-refresh toggle
+        self.auto_refresh_var = tk.BooleanVar(value=True)
+        self.auto_refresh_cb = ttk.Checkbutton(
+            seller_row, text="Auto-sync",
+            variable=self.auto_refresh_var,
+            command=self._toggle_auto_refresh
+        )
+        self.auto_refresh_cb.pack(side=tk.LEFT, padx=5)
+        
+        # Countdown label for next refresh
+        self.countdown_label = ttk.Label(
+            seller_row, text="",
+            font=("Segoe UI", 9),
+            foreground="gray"
+        )
+        self.countdown_label.pack(side=tk.LEFT, padx=10)
+        
+        # === Row 2: Buyer (Secondary) Character ===
+        buyer_row = ttk.Frame(auth_frame)
+        buyer_row.pack(fill=tk.X, pady=(2, 0))
+        
+        ttk.Label(buyer_row, text="Buyer:", font=("Segoe UI", 9, "bold"), width=6).pack(side=tk.LEFT)
+        
+        self.buyer_status = ttk.Label(
+            buyer_row, text="(same as seller)",
+            font=("Segoe UI", 9), width=25, anchor=tk.W,
+            foreground="gray"
+        )
+        self.buyer_status.pack(side=tk.LEFT, padx=5)
+        
+        self.buyer_logout_btn = ttk.Button(
+            buyer_row, text="Logout",
+            command=lambda: self._logout("buyer"), width=7
+        )
+        self.buyer_logout_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.buyer_login_btn = ttk.Button(
+            buyer_row, text="Login",
+            command=lambda: self._show_login_dialog("buyer"), width=7
+        )
+        self.buyer_login_btn.pack(side=tk.LEFT, padx=2)
+        
+        # Swap button
+        self.swap_btn = ttk.Button(
+            buyer_row, text="Swap",
+            command=self._swap_characters, width=6
+        )
+        self.swap_btn.pack(side=tk.LEFT, padx=(10, 2))
+        
+        # Info label
+        ttk.Label(
+            buyer_row, 
+            text="(Buyer only used for cross-hub arbitrage)",
+            font=("Segoe UI", 8),
+            foreground="gray"
+        ).pack(side=tk.LEFT, padx=10)
+        
+        # Legacy compatibility - keep old references pointing to seller
+        self.auth_status = self.seller_status
+        self.login_btn = self.seller_login_btn
+        self.logout_btn = self.seller_logout_btn
+
+    def _create_trades_panel(self):
+        """Create right trades list panel."""
+        trades_frame = ttk.LabelFrame(
+            self.content_frame, text="Tracked Trades", padding=5
+        )
+        trades_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        # Filter buttons
+        filter_frame = ttk.Frame(trades_frame)
+        filter_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        self.filter_var = tk.StringVar(value="active")
+        filters = [("Active", "active"), ("Sold", "sold"), ("All", "all")]
+        for text, value in filters:
+            ttk.Radiobutton(
+                filter_frame, text=text, value=value,
+                variable=self.filter_var, command=self._refresh_display
+            ).pack(side=tk.LEFT, padx=5)
+        
+        # Trades treeview
+        self.trades_tree = ttk.Treeview(
+            trades_frame, columns=TRADE_COLUMNS, show="headings", height=15
+        )
+        
+        # Configure columns with sort commands
+        for col in TRADE_COLUMNS:
+            self.trades_tree.heading(
+                col, text=TRADE_COL_TITLES[col],
+                command=lambda c=col: sort_treeview(
+                    self.trades_tree, c, self.sort_state,
+                    TRADE_COL_TITLES, TRADE_NUMERIC_COLS
+                )
+            )
+        
+        self.trades_tree.column("item", width=180)
+        self.trades_tree.column("status", width=70, anchor=tk.CENTER)
+        self.trades_tree.column("qty", width=50, anchor=tk.E)
+        self.trades_tree.column("buy", width=90, anchor=tk.E)
+        self.trades_tree.column("sell", width=90, anchor=tk.E)
+        self.trades_tree.column("profit", width=90, anchor=tk.E)
+        self.trades_tree.column("break_even", width=90, anchor=tk.E)
+        self.trades_tree.column("fees", width=80, anchor=tk.E)
+        
+        # Scrollbar
+        vsb = ttk.Scrollbar(trades_frame, orient=tk.VERTICAL, command=self.trades_tree.yview)
+        self.trades_tree.configure(yscrollcommand=vsb.set)
+        
+        self.trades_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Tags for coloring
+        self.trades_tree.tag_configure("profit", foreground="#006400")
+        self.trades_tree.tag_configure("loss", foreground="#8B0000")
+        self.trades_tree.tag_configure("active", foreground="#00008B")
+        self.trades_tree.tag_configure("flagged", foreground="#555555")
+        # Underbid warning - red background like a highlighter
+        self.trades_tree.tag_configure("underbid", background="#FFCCCC")
+        
+        # Context menu
+        self._create_context_menu(trades_frame)
+        
+        self.trades_tree.bind("<Button-3>", self._show_context_menu)
+        self.trades_tree.bind("<Double-1>", self._show_trade_details)
+
+    def _create_context_menu(self, parent):
+        """Create right-click context menu for trades tree."""
+        self.context_menu = tk.Menu(parent, tearoff=0)
+        self.context_menu.add_command(label="View Details", command=lambda: self._show_trade_details(None))
+        self.context_menu.add_separator()
+        
+        manual_menu = tk.Menu(self.context_menu, tearoff=0)
+        manual_menu.add_command(label="Record Buy", command=self._record_buy)
+        manual_menu.add_command(label="Record Listing", command=self._record_listing)
+        manual_menu.add_command(label="Record Relist", command=self._record_relist)
+        manual_menu.add_command(label="Record Sale", command=self._record_sale)
+        self.context_menu.add_cascade(label="Manual Record...", menu=manual_menu)
+        
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Ignore Underbid", command=self._ignore_underbid)
+        self.context_menu.add_command(label="Add to Stock Market", command=self._add_to_stock_market)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Delete Trade", command=self._delete_trade)
+
+    def _show_context_menu(self, event):
+        """Show context menu at click position."""
+        item = self.trades_tree.identify_row(event.y)
+        if item:
+            self.trades_tree.selection_set(item)
+            self.context_menu.post(event.x_root, event.y_root)
+
+    def _add_to_stock_market(self):
+        """Add selected item to stock market portfolio."""
+        selection = self.trades_tree.selection()
+        if not selection:
+            return
+        
+        trade_id = selection[0]
+        trade = self.tracker.get_trade(trade_id)
+        if not trade:
+            return
+        
+        if self.stock_market_tab:
+            from config import get_hub_config, DEFAULT_HUB
+            hub_config = get_hub_config(self.selected_hub or DEFAULT_HUB)
+            
+            self.stock_market_tab.add_item_from_external(
+                type_id=trade.type_id,
+                region_id=hub_config["region_id"],
+                station_id=hub_config["station_id"],
+                type_name=trade.type_name
+            )
+
+    def _on_esi_refresh(self):
+        """Called when ESI wallet data is refreshed.
+        
+        NOTE: Skills/standings refresh is now manual-only via the 
+        'Refresh Skills' button to avoid blocking the main thread.
+        """
+        # Just refresh the display - wallet data already synced
+        self._refresh_display()
+
+    def _on_standings_changed(self, station: float, faction: float):
+        """Called when manual standing override is changed."""
+        self.skills = TradingSkills(
+            broker_relations=self.skills.broker_relations,
+            accounting=self.skills.accounting,
+            advanced_broker_relations=self.skills.advanced_broker_relations,
+            station_standing=station,
+            faction_standing=faction,
+            manual_broker_fee=self.skills.manual_broker_fee,
+            manual_sales_tax=self.skills.manual_sales_tax
+        )
+        self.tracker.set_skills(self.skills)
+        self.standings_bar.update(self.skills)
+        self._refresh_display()
+
+    def _on_fees_changed(self, broker_fee: float, sales_tax: float):
+        """Called when manual fee override is changed."""
+        self.skills = TradingSkills(
+            broker_relations=self.skills.broker_relations,
+            accounting=self.skills.accounting,
+            advanced_broker_relations=self.skills.advanced_broker_relations,
+            station_standing=self.skills.station_standing,
+            faction_standing=self.skills.faction_standing,
+            manual_broker_fee=broker_fee,
+            manual_sales_tax=sales_tax
+        )
+        self.tracker.set_skills(self.skills)
+        self.standings_bar.update(self.skills)
+        self._refresh_display()
+
+    def _refresh_skills_async(self):
+        """Refresh skills and standings in background thread."""
+        if not self.auth.is_authenticated:
+            self.set_status("Not logged in")
+            return
+        
+        if not self.esi_skills:
+            self.set_status("ESI skills not initialized")
+            return
+        
+        # Check cache status - show time remaining if not ready
+        can_refresh, seconds_remaining = self.esi_skills.get_cache_status("seller")
+        if not can_refresh and seconds_remaining > 0:
+            mins = seconds_remaining // 60
+            secs = seconds_remaining % 60
+            self.set_status(f"Skills cache valid for {mins}m {secs}s")
+            return
+        
+        # Disable button during refresh
+        self.skills_btn.configure(state=tk.DISABLED)
+        self.set_status("Refreshing skills/standings...")
+        
+        def do_fetch():
+            """Background thread work."""
+            sell_hub = self._sell_hub_override or self.selected_hub
+            buy_hub = self._buy_hub_override or sell_hub
+            
+            # Fetch seller skills/standings
+            seller_skills = None
+            if self.auth.is_authenticated:
+                fetched = self.esi_skills.fetch_skills(slot="seller", force_refresh=True)
+                if fetched:
+                    station_standing = 0.0
+                    faction_standing = 0.0
+                    if self.esi_standings:
+                        corp, fac = self.esi_standings.get_standings_for_hub(sell_hub, slot="seller")
+                        station_standing = corp
+                        faction_standing = fac
+                    
+                    seller_skills = TradingSkills(
+                        broker_relations=fetched.broker_relations,
+                        accounting=fetched.accounting,
+                        advanced_broker_relations=fetched.advanced_broker_relations,
+                        station_standing=station_standing,
+                        faction_standing=faction_standing
+                    )
+            
+            # Fetch buyer skills/standings if logged in
+            buyer_skills = None
+            if hasattr(self.auth, 'has_buyer') and self.auth.has_buyer:
+                fetched = self.esi_skills.fetch_skills(slot="buyer", force_refresh=True)
+                if fetched:
+                    station_standing = 0.0
+                    faction_standing = 0.0
+                    if self.esi_standings:
+                        corp, fac = self.esi_standings.get_standings_for_hub(buy_hub, slot="buyer")
+                        station_standing = corp
+                        faction_standing = fac
+                    
+                    buyer_skills = TradingSkills(
+                        broker_relations=fetched.broker_relations,
+                        accounting=fetched.accounting,
+                        advanced_broker_relations=fetched.advanced_broker_relations,
+                        station_standing=station_standing,
+                        faction_standing=faction_standing
+                    )
+            
+            # Schedule UI update on main thread
+            def update_ui():
+                if seller_skills:
+                    self.skills = seller_skills
+                    self.tracker.set_skills(self.skills)
+                    print(f"Seller skills updated: BR={self.skills.broker_relations}, Acc={self.skills.accounting}")
+                
+                if buyer_skills:
+                    self.buyer_skills = buyer_skills
+                    print(f"Buyer skills updated: BR={self.buyer_skills.broker_relations}, Acc={self.buyer_skills.accounting}")
+                
+                # Update UI
+                self.standings_bar.update(self.skills)
+                self._save_cached_skills()
+                self._refresh_display()
+                
+                # Re-enable button
+                self.skills_btn.configure(state=tk.NORMAL)
+                self.set_status("Skills/standings refreshed")
+                
+                # Notify main GUI
+                if self._on_characters_changed:
+                    self._on_characters_changed()
+            
+            submit(update_ui)
+        
+        threading.Thread(target=do_fetch, daemon=True).start()
+
+    def _update_auth_display(self):
+        """Update authentication status display for both characters."""
+        # Seller status
+        if self.auth.is_authenticated:
+            seller_name = self.auth.seller_name if hasattr(self.auth, 'seller_name') else self.auth.character_name
+            self.seller_status.configure(
+                text=seller_name,
+                foreground="green"
+            )
+            self.seller_login_btn.configure(state=tk.DISABLED)
+            self.seller_logout_btn.configure(state=tk.NORMAL)
+            self.refresh_btn.configure(state=tk.NORMAL)
+        else:
+            self.seller_status.configure(
+                text="Not logged in",
+                foreground="gray"
+            )
+            self.seller_login_btn.configure(state=tk.NORMAL)
+            self.seller_logout_btn.configure(state=tk.DISABLED)
+            self.refresh_btn.configure(state=tk.DISABLED)
+        
+        # Buyer status
+        has_buyer = hasattr(self.auth, 'has_buyer') and self.auth.has_buyer
+        if has_buyer:
+            self.buyer_status.configure(
+                text=self.auth.buyer_name,
+                foreground="blue"
+            )
+            self.buyer_login_btn.configure(state=tk.DISABLED)
+            self.buyer_logout_btn.configure(state=tk.NORMAL)
+        else:
+            self.buyer_status.configure(
+                text="(not logged in)",
+                foreground="gray"
+            )
+            self.buyer_login_btn.configure(state=tk.NORMAL)
+            self.buyer_logout_btn.configure(state=tk.DISABLED)
+        
+        # Swap button - only enabled if BOTH characters are logged in
+        can_swap = self.auth.is_authenticated and has_buyer
+        self.swap_btn.configure(state=tk.NORMAL if can_swap else tk.DISABLED)
+
+    def _refresh_display(self):
+        """Refresh the trades list and summary."""
+        all_trades = list(self.tracker.trades.values())
+        sold_trades = [t for t in all_trades if t.status == "sold"]
+        listed_trades = [t for t in all_trades if t.status == "listed"]
+        
+        # Update summary panel
+        wallet_balance = self.wallet.balance if self.wallet else 0
+        self.summary_panel.update(sold_trades, listed_trades, wallet_balance, self.skills)
+        
+        # Refresh trades list
+        for item in self.trades_tree.get_children():
+            self.trades_tree.delete(item)
+        
+        filter_type = self.filter_var.get()
+        if filter_type == "active":
+            trades = self.tracker.get_active_trades()
+        elif filter_type == "sold":
+            trades = self.tracker.get_by_status("sold")
+        else:
+            trades = self.tracker.get_recent_trades()
+        
+        for trade in trades:
+            self._insert_trade(trade)
+
+    def _insert_trade(self, trade: TrackedTrade):
+        """Insert a trade into the treeview."""
+        fees = calculate_trade_fees(trade, self.skills)
+        be = calculate_trade_break_even(trade, self.skills)
+        
+        profit = trade.actual_profit
+        profit_str = format_isk(profit) if profit else "-"
+        
+        # Build tags list
+        tags = []
+        
+        if trade.status == "sold":
+            tags.append("profit" if profit and profit > 0 else "loss")
+        elif trade.status == "listed":
+            tags.append("active")
+            # Check for underbid (only for listed, non-ignored)
+            if not trade.ignore_underbid and self.underbid_monitor.is_underbid(trade.trade_id):
+                tags.append("underbid")
+        elif trade.status == "pending":
+            tags.append("flagged")
+        
+        self.trades_tree.insert("", tk.END, iid=trade.trade_id, values=(
+            trade.type_name,
+            trade.status.title(),
+            trade.buy_quantity or "-",
+            format_isk(trade.buy_price) if trade.buy_price else "-",
+            format_isk(trade.current_price) if trade.current_price else "-",
+            profit_str,
+            format_isk(be) if be else "-",
+            format_isk(fees) if fees else "-"
+        ), tags=tuple(tags))
+
+    def _get_selected_trade(self) -> Optional[TrackedTrade]:
+        """Get currently selected trade."""
+        selection = self.trades_tree.selection()
+        if not selection:
+            return None
+        return self.tracker.get_trade(selection[0])
+
+    # === Auth dialogs ===
+
+    def _show_login_dialog(self, slot: str = "seller"):
+        """Start ESI login flow for specified character slot."""
+        # Disable the appropriate login button
+        if slot == "buyer":
+            self.buyer_login_btn.configure(state=tk.DISABLED)
+        else:
+            self.seller_login_btn.configure(state=tk.DISABLED)
+        
+        self.set_status(f"Check your browser to log in {slot}...")
+        
+        def on_complete(success: bool, message: str):
+            def update():
+                if success:
+                    # Re-initialize ESI components if this is first login
+                    if not self.esi_skills:
+                        self.esi_skills = ESISkills(self.auth)
+                    if not self.esi_standings:
+                        self.esi_standings = ESIStandings(self.auth, self.esi_skills)
+                    
+                    # For seller, also set up wallet
+                    if slot == "seller":
+                        self.wallet = ESIWallet(self.auth)
+                        self.sync_manager.set_wallet(self.wallet)
+                    
+                    # Update auth display first
+                    self._update_auth_display()
+                    
+                    # Fetch skills async (non-blocking)
+                    self._refresh_skills_async()
+                    
+                    self.set_status(f"{message} - fetching skills...")
+                    
+                    if slot == "seller":
+                        if self.auto_refresh_var.get():
+                            self.sync_manager.schedule_auto_refresh()
+                else:
+                    self.set_status(f"Login failed: {message}")
+                    self._update_auth_display()
+                
+                # Notify main GUI
+                if self._on_characters_changed:
+                    self._on_characters_changed()
+                
+                # Re-enable login button
+                if slot == "buyer":
+                    self.buyer_login_btn.configure(state=tk.NORMAL)
+                else:
+                    self.seller_login_btn.configure(state=tk.NORMAL)
+            
+            submit(update)
+        
+        # Use the new slot parameter
+        if hasattr(self.auth, 'start_auth_flow'):
+            # Check if the method accepts slot parameter
+            import inspect
+            sig = inspect.signature(self.auth.start_auth_flow)
+            if 'slot' in sig.parameters:
+                self.auth.start_auth_flow(on_complete, slot=slot)
+            else:
+                # Old auth without slot support
+                self.auth.start_auth_flow(on_complete)
+        else:
+            self.auth.start_auth_flow(on_complete)
+
+    def _logout(self, slot: str = "seller"):
+        """Log out specified character."""
+        if hasattr(self.auth, 'logout'):
+            # Check if logout accepts slot parameter
+            import inspect
+            sig = inspect.signature(self.auth.logout)
+            if 'slot' in sig.parameters:
+                self.auth.logout(slot=slot)
+            else:
+                # Old auth - logout clears everything
+                self.auth.logout()
+        
+        if slot == "seller":
+            self.wallet = None
+            self.skills = DEFAULT_SKILLS
+            self.tracker.set_skills(self.skills)
+            self.sync_manager.set_wallet(None)
+            self.sync_manager.cancel_auto_refresh()
+            
+            # If no buyer either, clear ESI components
+            if not (hasattr(self.auth, 'has_buyer') and self.auth.has_buyer):
+                self.esi_skills = None
+                self.esi_standings = None
+        else:
+            self.buyer_skills = DEFAULT_SKILLS
+        
+        self._update_auth_display()
+        
+        # Notify main GUI
+        if self._on_characters_changed:
+            self._on_characters_changed()
+        
+        self.set_status(f"Logged out {slot}")
+
+    def _swap_characters(self):
+        """Swap seller and buyer characters."""
+        if not hasattr(self.auth, 'swap_characters'):
+            messagebox.showinfo("Swap", "Character swap requires updated ESI auth module")
+            return
+        
+        if not self.auth.has_buyer:
+            messagebox.showinfo("Swap", "No buyer character to swap with. Login a second character first.")
+            return
+        
+        # Swap in auth (this swaps tokens)
+        self.auth.swap_characters()
+        
+        # Swap our local skill objects
+        self.skills, self.buyer_skills = self.buyer_skills, self.skills
+        self.tracker.set_skills(self.skills)
+        
+        # Clear all caches to force fresh fetches
+        if self.esi_skills:
+            self.esi_skills.clear_cache()
+        if self.esi_standings:
+            self.esi_standings.clear_cache()
+        
+        # Clear any stale hub overrides from prior calls
+        self._sell_hub_override = None
+        self._buy_hub_override = None
+        
+        # Re-fetch both characters with fresh data
+        self.refresh_all_character_data()
+        
+        # Refresh wallet/orders/transactions for the new seller
+        # (skills fetch above is async; wallet refresh runs in parallel)
+        if self.wallet:
+            self.sync_manager.refresh_esi_data()
+        
+        self._update_auth_display()
+        
+        # Notify main GUI
+        if self._on_characters_changed:
+            self._on_characters_changed()
+        
+        self.set_status(f"Swapped: Seller={self.auth.seller_name}, Buyer={self.auth.buyer_name}")
+
+    def _toggle_auto_refresh(self):
+        """Toggle auto-refresh on/off."""
+        self.sync_manager.toggle_auto_refresh(self.auto_refresh_var.get())
+
+    # === Trade recording dialogs ===
+
+    def _record_buy(self):
+        """Show dialog to manually record buy info."""
+        trade = self._get_selected_trade()
+        if not trade or trade.status != "pending":
+            messagebox.showinfo("Cannot Record", "Select a pending trade to record buy info.")
+            return
+        
+        def on_save(trade_id, price, qty):
+            self.tracker.update_buy_info(trade_id, price, qty)
+            self._refresh_display()
+        
+        RecordBuyDialog(self.frame, trade, on_save)
+
+    def _record_listing(self):
+        """Show dialog to manually record listing info."""
+        trade = self._get_selected_trade()
+        if not trade or trade.status != "pending":
+            messagebox.showinfo("Cannot Record", "Select a pending trade to record listing info.")
+            return
+        
+        def on_save(trade_id, price):
+            self.tracker.update_listing_info(trade_id, price)
+            self._refresh_display()
+        
+        RecordListingDialog(self.frame, trade, on_save)
+
+    def _record_relist(self):
+        """Show dialog to record a relist (price change)."""
+        trade = self._get_selected_trade()
+        if not trade or trade.status != "listed":
+            messagebox.showinfo("Cannot Record", "Select a listed trade to record relist.")
+            return
+        
+        def on_save(trade_id, new_price):
+            self.tracker.record_relist(trade_id, new_price, self.skills)
+            self._refresh_display()
+        
+        RecordRelistDialog(self.frame, trade, on_save)
+
+    def _record_sale(self):
+        """Show dialog to manually record sale."""
+        trade = self._get_selected_trade()
+        if not trade or trade.status not in ("pending", "listed"):
+            messagebox.showinfo("Cannot Record", "Select an active trade to record sale.")
+            return
+        
+        def on_save(trade_id, price, qty):
+            self.tracker.record_sale(trade_id, price, qty, self.skills)
+            self._refresh_display()
+        
+        RecordSaleDialog(self.frame, trade, on_save)
+
+    def _delete_trade(self):
+        """Delete the selected trade."""
+        trade = self._get_selected_trade()
+        if trade:
+            if messagebox.askyesno("Delete Trade", f"Delete trade for {trade.type_name}?"):
+                self.underbid_monitor.clear_trade(trade.trade_id)
+                self.tracker.delete_trade(trade.trade_id)
+                self._refresh_display()
+
+    def _ignore_underbid(self):
+        """Ignore underbid warning for the selected trade."""
+        trade = self._get_selected_trade()
+        if not trade:
+            return
+        
+        if trade.status != "listed":
+            messagebox.showinfo("Cannot Ignore", "Only listed trades can have underbid warnings.")
+            return
+        
+        # Set ignore flag in tracker (persists to file)
+        self.tracker.set_ignore_underbid(trade.trade_id, True)
+        
+        # Also update monitor state
+        self.underbid_monitor.ignore_underbid(trade.trade_id)
+        
+        self.set_status(f"Ignoring underbid for {trade.type_name}")
+        self._refresh_display()
+
+    def _show_trade_details(self, event):
+        """Show detailed trade info on double-click."""
+        trade = self._get_selected_trade()
+        if not trade:
+            return
+        
+        be_value = calculate_trade_break_even(trade, self.skills)
+        TradeDetailsDialog(self.frame, trade, be_value)
+
+    # === Public API for integration with deals tab ===
+
+    def flag_deal(self, type_id: int, type_name: str,
+                  buy_price: float, sell_price: float, profit_per_unit: float):
+        """Flag a deal for tracking (called from deals tab context menu)."""
+        trade = self.tracker.flag_for_buy(
+            type_id=type_id,
+            type_name=type_name,
+            projected_buy=buy_price,
+            projected_sell=sell_price,
+            projected_profit=profit_per_unit
+        )
+        
+        # Backfill from ESI if wallet data available
+        if self.wallet and self.wallet.transactions:
+            results = self.sync_manager.backfill_trade_from_esi(trade.trade_id)
+            if results["sale"]:
+                self.set_status(f"Tracked (already sold): {type_name}")
+            elif results["listing"]:
+                self.set_status(f"Tracked (listed): {type_name}")
+            elif results["buy"]:
+                self.set_status(f"Tracked (bought, awaiting list): {type_name}")
+            else:
+                self.set_status(f"Tracking: {type_name}")
+        else:
+            self.set_status(f"Tracking: {type_name}")
+        
+        self._refresh_display()
+        return trade
+
+    def get_skills(self) -> TradingSkills:
+        """Get current trading skills for use by other modules (e.g., scanner)."""
+        return self.skills
+    
+    def get_buyer_skills(self) -> TradingSkills:
+        """Get buyer character's trading skills for cross-hub calculations."""
+        return self.buyer_skills
+    
+    def get_standings(self):
+        """Get ESIStandings instance for hub-specific standings lookups."""
+        return self.esi_standings
+    
+    def set_hub(self, hub_key: str):
+        """Update the selected hub for underbid monitoring."""
+        self.selected_hub = hub_key
+        self.sync_manager.set_underbid_monitor(self.underbid_monitor, hub_key)

@@ -1,0 +1,64 @@
+# =============================================================================
+# EVE Market Scout - Git Ignore
+# =============================================================================
+
+# Databases (large, generated, user-specific)
+*.db
+market_history.db
+sde_types.db
+sde_industry.db
+
+# User authentication and personal data
+esi_auth.json
+tracked_trades.json
+watchlist.json
+ignored_items.json
+npc_orders.json
+skills_cache.json
+standings_cache.json
+
+# Cache files
+*.jsonl
+esi_supplement.jsonl
+
+# Downloaded archives (500MB+)
+history-archive/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# PyInstaller build output
+build/
+dist/
+*.manifest
+
+# Keep the spec file, ignore build artifacts
+# EVE-Market-Scout.spec  <-- this IS tracked
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Test files
+test_*.py
+tests/
+
+# Backup files
+*.bak
+*.backup
+*.old

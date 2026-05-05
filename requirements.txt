@@ -1,0 +1,9 @@
+# EVE Market Scout Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core dependencies (required)
+aiohttp>=3.8.0      # Async HTTP for ESI API calls
+requests>=2.28.0    # Sync HTTP for OAuth flow
+
+# Optional but recommended
+matplotlib>=3.5.0   # Price history graphs (app works without, but no charts)
