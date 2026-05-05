@@ -474,24 +474,56 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
             panel.refresh_display_async()
     
     def _startup_refresh(self):
-        """Initial load: show existing data then run material filter.
-        
-        Called once at startup via frame.after().  Each hub panel's
-        apply_material_filter() checks the once-per-day tracker, so
-        this is safe to call every startup.
+        """Initial load: pull stale hubs then run material filter + LI.
+
+        On first launch of the day any hub whose orders are older than 24h
+        triggers the full sequence:
+          1. Notebook-wide overlay shows while orders are pulled from ESI.
+          2. Overlay hides; per-hub MF + LI phases run (with per-hub overlays).
+
+        If all hubs are already fresh the overlay is skipped and MF + LI
+        run directly (their own once-per-day trackers decide whether to
+        compute or skip to refresh).
         """
-        self._apply_material_filter_all()
-    
+        client = self.get_client() if self.get_client else None
+        stale = self._get_stale_hubs(client) if client else []
+
+        if stale:
+            self._show_burst_overlay("Preparing...", 0, len(stale))
+
+            def run_burst():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    async def do_burst():
+                        client.ensure_session()
+                        client.reset_for_new_loop()
+                        total = len(stale)
+                        for i, (hub_key, region_id, hub_name) in enumerate(stale, 1):
+                            submit(lambda n=hub_name, idx=i, t=total:
+                                   self._update_burst_overlay(n, idx, t))
+                            try:
+                                print(f"[StockMarket] Startup pull: {hub_key}")
+                                await client.get_market_orders(region_id)
+                            except Exception as e:
+                                print(f"[StockMarket] Startup pull failed "
+                                      f"for {hub_key}: {e}")
+                    loop.run_until_complete(do_burst())
+                finally:
+                    loop.close()
+                submit(self._hide_burst_overlay)
+                submit(self._apply_material_filter_all)
+
+            threading.Thread(target=run_burst, daemon=True,
+                             name="StartupBurst").start()
+        else:
+            self._apply_material_filter_all()
+
     def _on_profiles_ready(self):
-        """Called when background import finishes building profiles.
-        
-        Runs material filter on all hubs which clears stale cache
-        entries and refreshes the display with correct risk
-        classifications.
-        """
+        """Called when background import finishes building profiles."""
         print("[StockMarket] Profiles ready - running material filter")
         self._apply_material_filter_all()
-    
+
     def _apply_material_filter_all(self):
         """Run material filter on every hub panel.
 
@@ -501,6 +533,80 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
         """
         for panel in self.hub_panels.values():
             panel.apply_material_filter()
+
+    # =========================================================================
+    # Burst overlay (notebook-wide, used during startup order pull)
+    # =========================================================================
+
+    def _show_burst_overlay(self, message: str, current: int, total: int):
+        """Show notebook-wide overlay while pulling orders at startup."""
+        if not hasattr(self, '_burst_overlay_frame'):
+            self._burst_overlay_frame = ttk.Frame(self.frame)
+            center = ttk.Frame(self._burst_overlay_frame)
+            center.place(relx=0.5, rely=0.4, anchor=tk.CENTER)
+            ttk.Label(
+                center, text="Loading Market Data",
+                font=("Segoe UI", 13, "bold")
+            ).pack(pady=(0, 12))
+            self._burst_status_var = tk.StringVar(value=message)
+            ttk.Label(
+                center, textvariable=self._burst_status_var,
+                font=("Segoe UI", 10)
+            ).pack(pady=(0, 8))
+            self._burst_progress_var = tk.DoubleVar(value=0)
+            self._burst_progress = ttk.Progressbar(
+                center, variable=self._burst_progress_var,
+                length=300, mode="determinate"
+            )
+            self._burst_progress.pack(pady=(0, 6))
+            self._burst_detail_var = tk.StringVar(value="")
+            ttk.Label(
+                center, textvariable=self._burst_detail_var,
+                font=("Segoe UI", 9), foreground="gray"
+            ).pack()
+
+        if total > 0:
+            self._burst_progress.configure(maximum=total)
+            self._burst_progress_var.set(0)
+        self._burst_status_var.set(message)
+        self._burst_detail_var.set(f"0 of {total} hubs")
+        self._burst_overlay_frame.place(
+            in_=self.frame, relx=0, rely=0, relwidth=1.0, relheight=1.0
+        )
+        self._burst_overlay_frame.lift()
+
+    def _update_burst_overlay(self, hub_name: str, current: int, total: int):
+        """Update burst overlay progress. Main thread only."""
+        if not hasattr(self, '_burst_status_var'):
+            return
+        self._burst_status_var.set(f"Loading {hub_name}...")
+        self._burst_progress_var.set(current - 1)
+        self._burst_detail_var.set(f"Hub {current} of {total}")
+
+    def _hide_burst_overlay(self):
+        """Hide the startup burst overlay."""
+        if hasattr(self, '_burst_overlay_frame'):
+            self._burst_overlay_frame.place_forget()
+
+    # =========================================================================
+    # Stale-hub helper (shared by startup and post-scanner burst)
+    # =========================================================================
+
+    def _get_stale_hubs(self, client) -> list:
+        """Return (hub_key, region_id, hub_name) for hubs with cache > 24h old."""
+        now = datetime.now(timezone.utc)
+        stale = []
+        for hub_key, config in TRADE_HUBS.items():
+            if not config.get("enabled", True):
+                continue
+            region_id = config["region_id"]
+            entry = client.order_cache._order_cache.get(region_id)
+            if entry and entry.get('timestamp'):
+                age = (now - entry['timestamp']).total_seconds()
+                if age < 86400:
+                    continue
+            stale.append((hub_key, region_id, config["name"]))
+        return stale
 
     # =========================================================================
     # Daily hub burst (called after each scanner tick)
@@ -513,9 +619,9 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
     def _run_daily_hub_burst(self):
         """Pull any hub whose order cache is older than 24 hours.
 
+        Silent background pull — no overlay, no MF/LI chain.
         The scanner may have already refreshed some hubs this tick; those
-        will have a recent timestamp and are skipped.  Only stale hubs
-        fire an ESI call.
+        will have a recent timestamp and are skipped.
         """
         if not self.get_client:
             return
@@ -523,23 +629,11 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
         if not client:
             return
 
-        now = datetime.now(timezone.utc)
-        stale_hubs = []
-        for hub_key, config in TRADE_HUBS.items():
-            if not config.get("enabled", True):
-                continue
-            region_id = config["region_id"]
-            entry = client.order_cache._order_cache.get(region_id)
-            if entry and entry.get('timestamp'):
-                age = (now - entry['timestamp']).total_seconds()
-                if age < 86400:
-                    continue
-            stale_hubs.append((hub_key, region_id))
-
-        if not stale_hubs:
+        stale = self._get_stale_hubs(client)
+        if not stale:
             return
 
-        hub_names = ", ".join(h for h, _ in stale_hubs)
+        hub_names = ", ".join(h for h, _, _ in stale)
         print(f"[StockMarket] Daily burst: pulling {hub_names}")
 
         def run_burst():
@@ -549,12 +643,13 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
                 async def do_burst():
                     client.ensure_session()
                     client.reset_for_new_loop()
-                    for hub_key, region_id in stale_hubs:
+                    for hub_key, region_id, _ in stale:
                         try:
                             print(f"[StockMarket] Daily burst: {hub_key}")
                             await client.get_market_orders(region_id)
                         except Exception as e:
-                            print(f"[StockMarket] Daily burst failed for {hub_key}: {e}")
+                            print(f"[StockMarket] Daily burst failed "
+                                  f"for {hub_key}: {e}")
                 loop.run_until_complete(do_burst())
             finally:
                 loop.close()
