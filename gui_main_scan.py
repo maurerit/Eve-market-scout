@@ -241,6 +241,11 @@ class MainScanMixin:
             print(f"Error updating jita status: {e}")
         if self.auto_refresh_enabled:
             self._schedule_auto_refresh()
+        if hasattr(self, 'stock_market_tab') and self.stock_market_tab:
+            try:
+                self.stock_market_tab._on_scanner_tick_complete()
+            except Exception as e:
+                print(f"[Scan] tick complete callback error: {e}")
 
     def _update_progress(self, status: str, percent: int):
         """Update progress bar and status."""

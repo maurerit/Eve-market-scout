@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk
 import asyncio
 import threading
+from datetime import datetime, timezone
 from typing import Optional, Callable, List, Dict, TYPE_CHECKING
 
 from tk_queue import submit
@@ -493,10 +494,69 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
     
     def _apply_material_filter_all(self):
         """Run material filter on every hub panel.
-        
+
         Each panel checks its own once-per-day tracker.  If the filter
         already ran today for a hub, that hub falls back to a normal
         async refresh (reading existing cached results).
         """
         for panel in self.hub_panels.values():
             panel.apply_material_filter()
+
+    # =========================================================================
+    # Daily hub burst (called after each scanner tick)
+    # =========================================================================
+
+    def _on_scanner_tick_complete(self):
+        """Called by the scanner after each scan finishes."""
+        self._run_daily_hub_burst()
+
+    def _run_daily_hub_burst(self):
+        """Pull any hub whose order cache is older than 24 hours.
+
+        The scanner may have already refreshed some hubs this tick; those
+        will have a recent timestamp and are skipped.  Only stale hubs
+        fire an ESI call.
+        """
+        if not self.get_client:
+            return
+        client = self.get_client()
+        if not client:
+            return
+
+        now = datetime.now(timezone.utc)
+        stale_hubs = []
+        for hub_key, config in TRADE_HUBS.items():
+            if not config.get("enabled", True):
+                continue
+            region_id = config["region_id"]
+            entry = client.order_cache._order_cache.get(region_id)
+            if entry and entry.get('timestamp'):
+                age = (now - entry['timestamp']).total_seconds()
+                if age < 86400:
+                    continue
+            stale_hubs.append((hub_key, region_id))
+
+        if not stale_hubs:
+            return
+
+        hub_names = ", ".join(h for h, _ in stale_hubs)
+        print(f"[StockMarket] Daily burst: pulling {hub_names}")
+
+        def run_burst():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                async def do_burst():
+                    client.ensure_session()
+                    client.reset_for_new_loop()
+                    for hub_key, region_id in stale_hubs:
+                        try:
+                            print(f"[StockMarket] Daily burst: {hub_key}")
+                            await client.get_market_orders(region_id)
+                        except Exception as e:
+                            print(f"[StockMarket] Daily burst failed for {hub_key}: {e}")
+                loop.run_until_complete(do_burst())
+            finally:
+                loop.close()
+
+        threading.Thread(target=run_burst, daemon=True).start()
