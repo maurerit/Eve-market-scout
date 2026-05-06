@@ -20,6 +20,7 @@ from historical_profiles import ProfileManager, YearlyStats
 from gui_stockmarket_ticker import ScrollingTicker
 from gui_stockmarket_risk import RiskCategoryPanel, format_isk
 from gui_stockmarket_hub_filters import HubFilterPhaseMixin
+from gui_stockmarket_hub_refresh import HubPanelRefreshMixin
 
 if TYPE_CHECKING:
     from api import ESIClient
@@ -36,7 +37,7 @@ def _check_thread(context: str):
         traceback.print_stack(limit=8)
 
 
-class StockMarketHubPanel(HubFilterPhaseMixin):
+class StockMarketHubPanel(HubPanelRefreshMixin, HubFilterPhaseMixin):
     """Panel for a single trading hub's stock market functionality.
     
     Contains sub-tabs:
@@ -94,7 +95,17 @@ class StockMarketHubPanel(HubFilterPhaseMixin):
         # Main container
         main_container = ttk.Frame(self.frame)
         main_container.pack(fill=tk.BOTH, expand=True)
-        
+
+        # Refresh status header
+        header = ttk.Frame(main_container)
+        header.pack(fill=tk.X, padx=5, pady=(2, 0))
+        self._last_refreshed_var = tk.StringVar(value="Updated: --")
+        self._next_refresh_var = tk.StringVar(value="Next: --")
+        ttk.Label(header, textvariable=self._last_refreshed_var,
+                  font=("Segoe UI", 8), foreground="gray").pack(side=tk.LEFT)
+        ttk.Label(header, textvariable=self._next_refresh_var,
+                  font=("Segoe UI", 8), foreground="gray").pack(side=tk.LEFT, padx=(12, 0))
+
         # Create notebook for sub-tabs
         self.sub_notebook = ttk.Notebook(main_container)
         self.sub_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -173,6 +184,29 @@ class StockMarketHubPanel(HubFilterPhaseMixin):
             # Switch to holdings tab (index 3: Low=0, Med=1, High=2, Holdings=3, P&L=4)
             self.sub_notebook.select(3)
     
+    def update_refresh_labels(self, order_cache):
+        """Update last_refreshed / next_refresh labels from the order cache."""
+        from datetime import datetime, timezone
+        entry = order_cache._order_cache.get(self.region_id, {})
+        ts = entry.get("timestamp")
+        expires = entry.get("expires")
+        if ts:
+            self._last_refreshed_var.set(
+                f"Updated: {ts.strftime('%H:%M')} EVE"
+            )
+        else:
+            self._last_refreshed_var.set("Updated: --")
+        if expires:
+            self._next_refresh_var.set(
+                f"Next: {expires.strftime('%H:%M')} EVE"
+            )
+        elif ts:
+            from datetime import timedelta
+            nxt = ts + timedelta(minutes=5)
+            self._next_refresh_var.set(f"Next: {nxt.strftime('%H:%M')} EVE")
+        else:
+            self._next_refresh_var.set("Next: --")
+
     def reload_filters_from_cache(self):
         """Reload fee rates from cached skills JSON (called after ESI refresh)."""
         _check_thread(f"HubPanel.reload_filters_from_cache({self.hub_key})")
@@ -373,262 +407,6 @@ class StockMarketHubPanel(HubFilterPhaseMixin):
             self.holdings_panel.refresh_display()
         
         self._update_ticker()
-    
-    def refresh_display_async(self, after: Optional[Callable[[], None]] = None):
-        """Refresh display without blocking UI.
-        
-        Gathers all data in background thread, then updates UI on main
-        thread.  Uses cached material risk results (read-only) for
-        classification — never triggers fresh analysis.
-        
-        Args:
-            after: Optional callback invoked on the main thread once the
-                refresh has applied (or errored).  Used by
-                apply_material_filter() to hide the lock overlay.
-        """
-        from sde_manager import get_sde_manager
-        
-        print(f"[StockMarket-{self.hub_key}] refresh_display_async starting...")
-        
-        def gather_data():
-            """Background thread: gather all profile data."""
-            try:
-                sde = get_sde_manager()
-                
-                # Invalidate the LI routing cache so this refresh picks up
-                # any new leading-indicator data computed by the LI phase.
-                self._li_cache_for_routing = None
-                
-                # Gather risk panel data
-                risk_data = {"low": [], "medium": [], "high": []}
-                all_profiles = self.profiles.get_all_profiles()
-                region_profiles = [p for p in all_profiles if p.region_id == self.region_id]
-                
-                print(f"[StockMarket-{self.hub_key}] Found {len(all_profiles)} total profiles, {len(region_profiles)} for region {self.region_id}")
-                
-                # Batched fetch — one SQL query for the whole region instead
-                # of N short-lived connections per profile.  Previously this
-                # was the dominant cost when 5 hubs refresh concurrently.
-                all_stats = self.profiles.get_all_yearly_stats_for_region(
-                    self.region_id, context_label=self.hub_key
-                )
-                
-                # Single pass over profiles — classify once, bucket
-                # accordingly.  Previous code looped 3 times and ran
-                # get_yearly_stats N*3 times.
-                for profile in region_profiles:
-                    yearly_stats = all_stats.get(profile.type_id, {})
-                    trend = self._get_trend_for_data(yearly_stats, profile)
-                    if trend not in risk_data:
-                        continue
-                    
-                    type_name = sde.get_type_name(profile.type_id) or f"Type {profile.type_id}"
-                    current_price = self.live_prices.get(profile.type_id, 0)
-                    trend_tag = self._get_trend_tag_for_data(yearly_stats)
-                    
-                    risk_data[trend].append({
-                        "type_id": profile.type_id,
-                        "type_name": type_name,
-                        "profile": profile,
-                        "current_price": current_price,
-                        "trend_tag": trend_tag,
-                    })
-                
-                for risk_level, items in risk_data.items():
-                    print(f"[StockMarket-{self.hub_key}] {risk_level}: {len(items)} items")
-                
-                # Update UI on main thread
-                submit(lambda: self._apply_refresh_data(risk_data, after=after))
-                
-            except Exception as e:
-                print(f"[StockMarket-{self.hub_key}] refresh_display_async ERROR: {e}")
-                import traceback
-                traceback.print_exc()
-                # Make sure the overlay still gets hidden on error
-                if after is not None:
-                    submit(after)
-        
-        threading.Thread(target=gather_data, daemon=True).start()
-    
-    def _get_trend_for_data(self, yearly_stats: dict, profile) -> str:
-        """Determine trend from yearly stats (thread-safe, no UI calls).
-        
-        Reads from the pre-populated material risk cache but never
-        triggers fresh analysis.  apply_material_filter() is the only
-        entry-point that clears and re-populates the cache.
-        
-        Leading indicators promotion (after material filter):
-        UNDERCUT SPIRAL or LIQUIDITY DRAIN bumps the item one tier up
-        (low -> medium, medium -> high). High Risk stays High Risk.
-        """
-        if len(yearly_stats) < 2:
-            return "none"
-        
-        years = sorted(yearly_stats.keys(), reverse=True)
-        floors = [yearly_stats[y].p_low for y in years[:3]]
-        
-        if len(floors) < 2:
-            return "none"
-        
-        # Declining floors = high risk
-        declining = all(floors[i] < floors[i + 1] for i in range(len(floors) - 1))
-        if declining:
-            return "high"
-        
-        # Determine base tier from floor pattern (+ material filter)
-        base_tier = None
-        rising = all(floors[i] > floors[i + 1] for i in range(len(floors) - 1))
-        if rising:
-            base_tier = "medium"
-        else:
-            # Check stability = low risk candidate
-            if len(floors) >= 2:
-                avg_floor = sum(floors) / len(floors)
-                if avg_floor > 0:
-                    max_deviation = max(abs(f - avg_floor) / avg_floor * 100 for f in floors)
-                    if max_deviation <= 15:
-                        # Stable floors - check cached material risk (read-only)
-                        if profile:
-                            from stockmarket_filters import get_cached_material_risk
-                            cached = get_cached_material_risk(
-                                profile.type_id, self.region_id
-                            )
-                            if cached == 'medium':
-                                base_tier = "medium"
-                            else:
-                                base_tier = "low"
-                        else:
-                            base_tier = "low"
-        
-        if base_tier is None:
-            return "none"
-        
-        # Leading indicators promotion: UNDERCUT SPIRAL or LIQUIDITY DRAIN
-        # bumps one tier up. High already returned above. High Risk caps out.
-        if profile and base_tier in ("low", "medium"):
-            li_result = self._li_lookup_for_data(profile.type_id)
-            if li_result and li_result.is_promotion:
-                if base_tier == "low":
-                    return "medium"
-                if base_tier == "medium":
-                    return "high"
-        
-        return base_tier
-    
-    def _li_lookup_for_data(self, type_id: int):
-        """Lookup cached leading indicator result for a single item.
-        
-        Loads the per-region cache lazily and stores it on self for the
-        duration of one refresh pass. Cleared by refresh_display_async
-        before each background routing pass.
-        """
-        if not hasattr(self, "_li_cache_for_routing") or self._li_cache_for_routing is None:
-            try:
-                import leading_indicators_storage
-                self._li_cache_for_routing = (
-                    leading_indicators_storage.load_for_region(self.region_id)
-                )
-            except Exception as e:
-                print(f"[StockMarket-{self.hub_key}] LI routing cache "
-                      f"load error: {e}")
-                self._li_cache_for_routing = {}
-        return self._li_cache_for_routing.get(type_id)
-    
-    def _get_trend_tag_for_data(self, yearly_stats: dict) -> str:
-        """Get trend tag for row coloring (thread-safe)."""
-        if len(yearly_stats) < 2:
-            return "trend_none"
-        
-        years = sorted(yearly_stats.keys(), reverse=True)
-        floors = [yearly_stats[y].p_low for y in years[:3]]
-        
-        if len(floors) < 2:
-            return "trend_none"
-        
-        declining = all(floors[i] < floors[i + 1] for i in range(len(floors) - 1))
-        if declining:
-            return "trend_down"
-        
-        rising = all(floors[i] > floors[i + 1] for i in range(len(floors) - 1))
-        if rising:
-            return "trend_up"
-        
-        if len(floors) >= 2:
-            avg_floor = sum(floors) / len(floors)
-            if avg_floor > 0:
-                max_deviation = max(abs(f - avg_floor) / avg_floor * 100 for f in floors)
-                if max_deviation <= 15:
-                    return "trend_stable"
-        
-        return "trend_none"
-    
-    def _apply_refresh_data(self, risk_data: dict, after: Optional[Callable[[], None]] = None):
-        """Apply gathered data to UI (main thread only).
-        
-        Args:
-            risk_data: Pre-classified items per risk level.
-            after: Optional callback invoked after the UI has been
-                updated.  Used to hide the lock overlay.
-        """
-        print(f"[StockMarket-{self.hub_key}] _apply_refresh_data called")
-        
-        # Update risk panels with pre-computed data
-        for risk_level, items in risk_data.items():
-            panel = self.risk_panels.get(risk_level)
-            if panel:
-                print(f"[StockMarket-{self.hub_key}] Applying {len(items)} items to {risk_level} panel")
-                panel.refresh_from_data(items)
-        
-        # Ticker update is already async
-        self._update_ticker()
-        
-        print(f"[StockMarket-{self.hub_key}] _apply_refresh_data complete")
-        
-        if after is not None:
-            try:
-                after()
-            except Exception as e:
-                print(f"[StockMarket-{self.hub_key}] after callback error: {e}")
-    
-    
-    def _get_floor_trend(self, yearly_stats: dict) -> str:
-        """Pure floor-trend classification (no material filter lookup).
-        
-        Used internally by apply_material_filter() to identify stable-
-        floor items that are candidates for material analysis.
-        """
-        if len(yearly_stats) < 2:
-            return "none"
-        
-        years = sorted(yearly_stats.keys(), reverse=True)
-        floors = [yearly_stats[y].p_low for y in years[:3]]
-        
-        if len(floors) < 2:
-            return "none"
-        
-        declining = all(
-            floors[i] < floors[i + 1] for i in range(len(floors) - 1)
-        )
-        if declining:
-            return "high"
-        
-        rising = all(
-            floors[i] > floors[i + 1] for i in range(len(floors) - 1)
-        )
-        if rising:
-            return "medium"
-        
-        if len(floors) >= 2:
-            avg_floor = sum(floors) / len(floors)
-            if avg_floor > 0:
-                max_dev = max(
-                    abs(f - avg_floor) / avg_floor * 100
-                    for f in floors
-                )
-                if max_dev <= 15:
-                    return "low"
-        
-        return "none"
     
     def add_item(self, type_id: int, type_name: str, auto_build_profile: bool = True):
         """Add item to holdings."""

@@ -14,10 +14,11 @@ from typing import Optional, Callable, List, Dict, TYPE_CHECKING
 from tk_queue import submit
 from config import TRADE_HUBS, get_hub_config
 from historical_profiles import ProfileManager
-from gui_stockmarket_settings import load_settings
+from gui_stockmarket_settings import load_settings, save_settings
 from gui_stockmarket_hub import StockMarketHubPanel
 from gui_stockmarket_actions import StockMarketActionsMixin
 from gui_stockmarket_overlay import StockMarketOverlayMixin
+from stockmarket_filters import get_hub_burst_tracker
 
 if TYPE_CHECKING:
     from api import ESIClient
@@ -55,12 +56,14 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
         
         # Hub panels
         self.hub_panels: Dict[str, StockMarketHubPanel] = {}
+        self._active_hub_key: Optional[str] = None
         
         # Create main frame
         self.frame = ttk.Frame(notebook)
         notebook.add(self.frame, text="Stock Market")
         
         self._create_widgets()
+        self.frame.after(50, self._restore_active_tab)
         # Defer status update to avoid blocking startup with slow DB queries
         self.frame.after(100, self._update_archive_status_safe)
         # Defer initial data load + material filter to background thread
@@ -111,7 +114,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
         """Create notebook with sub-tabs for each hub."""
         self.hub_notebook = ttk.Notebook(self.frame)
         self.hub_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
-        
+        self.hub_notebook.bind("<<NotebookTabChanged>>", self._on_hub_tab_changed)
+
         # Create a panel for each enabled hub
         for hub_key, config in TRADE_HUBS.items():
             if not config.get("enabled", True):
@@ -154,6 +158,33 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
             pass
         return None
     
+    def _restore_active_tab(self):
+        """Select the last-active hub tab from saved settings."""
+        saved = self.settings.active_hub_key
+        if not saved:
+            return
+        hub_keys = [k for k, c in TRADE_HUBS.items() if c.get("enabled", True)]
+        if saved in hub_keys:
+            idx = hub_keys.index(saved)
+            try:
+                self.hub_notebook.select(idx)
+                self._active_hub_key = saved
+            except Exception:
+                pass
+
+    def _on_hub_tab_changed(self, event=None):
+        hub_key = self._get_current_hub_key()
+        if not hub_key or hub_key == self._active_hub_key:
+            return
+        self._active_hub_key = hub_key
+        self.settings.active_hub_key = hub_key
+        save_settings(self.settings)
+        client = self.get_client() if self.get_client else None
+        if client:
+            panel = self.hub_panels.get(hub_key)
+            if panel:
+                panel.render_from_cache(client.order_cache)
+
     # =========================================================================
     # Status Updates
     # =========================================================================
@@ -499,12 +530,14 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
                         client.ensure_session()
                         client.reset_for_new_loop()
                         total = len(stale)
+                        tracker = get_hub_burst_tracker()
                         for i, (hub_key, region_id, hub_name) in enumerate(stale, 1):
                             submit(lambda n=hub_name, idx=i, t=total:
                                    self._update_burst_overlay(n, idx, t))
                             try:
                                 print(f"[StockMarket] Startup pull: {hub_key}")
                                 await client.get_market_orders(region_id)
+                                tracker.mark_complete(hub_key)
                             except Exception as e:
                                 print(f"[StockMarket] Startup pull failed "
                                       f"for {hub_key}: {e}")
@@ -615,13 +648,20 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
     def _on_scanner_tick_complete(self):
         """Called by the scanner after each scan finishes."""
         self._run_daily_hub_burst()
+        hub_key = self._active_hub_key or self._get_current_hub_key()
+        if hub_key:
+            client = self.get_client() if self.get_client else None
+            if client:
+                panel = self.hub_panels.get(hub_key)
+                if panel:
+                    panel.render_from_cache(client.order_cache)
 
     def _run_daily_hub_burst(self):
-        """Pull any hub whose order cache is older than 24 hours.
+        """Pull any hub that hasn't had its daily burst today (EVE time).
 
         Silent background pull — no overlay, no MF/LI chain.
         The scanner may have already refreshed some hubs this tick; those
-        will have a recent timestamp and are skipped.
+        will show today's timestamp and be skipped by the tracker.
         """
         if not self.get_client:
             return
@@ -629,7 +669,12 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
         if not client:
             return
 
-        stale = self._get_stale_hubs(client)
+        tracker = get_hub_burst_tracker()
+        stale = [
+            (hub_key, region_id, name)
+            for hub_key, region_id, name in self._get_stale_hubs(client)
+            if tracker.should_run(hub_key, client.order_cache)
+        ]
         if not stale:
             return
 
@@ -643,10 +688,17 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
                 async def do_burst():
                     client.ensure_session()
                     client.reset_for_new_loop()
+                    active = self._active_hub_key or self._get_current_hub_key()
                     for hub_key, region_id, _ in stale:
                         try:
                             print(f"[StockMarket] Daily burst: {hub_key}")
                             await client.get_market_orders(region_id)
+                            tracker.mark_complete(hub_key)
+                            if hub_key == active:
+                                panel = self.hub_panels.get(hub_key)
+                                if panel:
+                                    submit(lambda p=panel: p.render_from_cache(
+                                        client.order_cache))
                         except Exception as e:
                             print(f"[StockMarket] Daily burst failed "
                                   f"for {hub_key}: {e}")

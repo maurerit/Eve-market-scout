@@ -40,6 +40,9 @@ class StockMarketSettings:
     # Offsets for buy/sell targets (no rebuild needed)
     floor_offset_pct: float = DEFAULT_FLOOR_OFFSET_PCT
     peak_offset_pct: float = DEFAULT_PEAK_OFFSET_PCT
+
+    # Last active hub tab (restored on launch)
+    active_hub_key: Optional[str] = None
     
     def get_archive_path(self) -> Path:
         """Get archive path, using default if not set."""
@@ -60,6 +63,7 @@ class StockMarketSettings:
             sell_percentile=data.get("sell_percentile", DEFAULT_SELL_PERCENTILE),
             floor_offset_pct=data.get("floor_offset_pct", DEFAULT_FLOOR_OFFSET_PCT),
             peak_offset_pct=data.get("peak_offset_pct", DEFAULT_PEAK_OFFSET_PCT),
+            active_hub_key=data.get("active_hub_key"),
         )
 
 

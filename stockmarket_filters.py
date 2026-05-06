@@ -18,7 +18,7 @@ Material Filter Optimization:
 import json
 import threading
 from dataclasses import dataclass, asdict, field
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Set, Tuple
 
@@ -601,3 +601,62 @@ def get_material_filter_tracker() -> MaterialFilterTracker:
     if _material_tracker_instance is None:
         _material_tracker_instance = MaterialFilterTracker()
     return _material_tracker_instance
+
+
+_BURST_MAX_AGE_SECONDS = 86400  # 24 hours
+
+
+class DailyHubBurstTracker:
+    """Tracks whether the order burst has run for each hub within the last 24h.
+
+    Cross-launch: uses the disk cache timestamp so a relaunch within 24h
+    of the last pull skips the burst entirely.
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._ran_this_session: Set[str] = set()
+        return cls._instance
+
+    def should_run(self, hub_key: str, order_cache=None) -> bool:
+        """Return True if this hub's cache is older than 24h and needs a pull."""
+        if hub_key in self._ran_this_session:
+            return False
+        if order_cache is not None:
+            from config import TRADE_HUBS
+            region_id = TRADE_HUBS.get(hub_key, {}).get("region_id")
+            if region_id:
+                entry = order_cache._order_cache.get(region_id, {})
+                ts = entry.get("timestamp")
+                if ts:
+                    age = (datetime.now(timezone.utc) - ts).total_seconds()
+                    if age < _BURST_MAX_AGE_SECONDS:
+                        self._ran_this_session.add(hub_key)
+                        return False
+        return True
+
+    def mark_complete(self, hub_key: str):
+        self._ran_this_session.add(hub_key)
+
+    def all_complete(self, order_cache=None) -> bool:
+        """Return True if every enabled hub has been pulled within 24h."""
+        from config import TRADE_HUBS
+        return not any(
+            self.should_run(hk, order_cache)
+            for hk, cfg in TRADE_HUBS.items()
+            if cfg.get("enabled", True)
+        )
+
+
+_hub_burst_tracker_instance: Optional["DailyHubBurstTracker"] = None
+
+
+def get_hub_burst_tracker() -> DailyHubBurstTracker:
+    """Get the global DailyHubBurstTracker instance."""
+    global _hub_burst_tracker_instance
+    if _hub_burst_tracker_instance is None:
+        _hub_burst_tracker_instance = DailyHubBurstTracker()
+    return _hub_burst_tracker_instance
