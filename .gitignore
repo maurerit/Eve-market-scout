@@ -64,3 +64,4 @@ tests/
 *.old
 *.zip
 *.rar
+.claude/settings.local.json

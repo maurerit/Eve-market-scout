@@ -139,6 +139,9 @@ class StockMarketHubPanel(HubPanelRefreshMixin, HubFilterPhaseMixin):
         self._overlay_frame = None
         self._overlay_status_var = None
         self._overlay_progress = None
+
+        self._refresh_label_timer: Optional[str] = None
+        self._start_refresh_label_timer()
     
     def _create_risk_tab(self, parent: ttk.Frame, risk_level: str):
         """Create a risk category tab."""
@@ -184,29 +187,6 @@ class StockMarketHubPanel(HubPanelRefreshMixin, HubFilterPhaseMixin):
             # Switch to holdings tab (index 3: Low=0, Med=1, High=2, Holdings=3, P&L=4)
             self.sub_notebook.select(3)
     
-    def update_refresh_labels(self, order_cache):
-        """Update last_refreshed / next_refresh labels from the order cache."""
-        from datetime import datetime, timezone
-        entry = order_cache._order_cache.get(self.region_id, {})
-        ts = entry.get("timestamp")
-        expires = entry.get("expires")
-        if ts:
-            self._last_refreshed_var.set(
-                f"Updated: {ts.strftime('%H:%M')} EVE"
-            )
-        else:
-            self._last_refreshed_var.set("Updated: --")
-        if expires:
-            self._next_refresh_var.set(
-                f"Next: {expires.strftime('%H:%M')} EVE"
-            )
-        elif ts:
-            from datetime import timedelta
-            nxt = ts + timedelta(minutes=5)
-            self._next_refresh_var.set(f"Next: {nxt.strftime('%H:%M')} EVE")
-        else:
-            self._next_refresh_var.set("Next: --")
-
     def reload_filters_from_cache(self):
         """Reload fee rates from cached skills JSON (called after ESI refresh)."""
         _check_thread(f"HubPanel.reload_filters_from_cache({self.hub_key})")
@@ -463,6 +443,17 @@ class StockMarketHubPanel(HubPanelRefreshMixin, HubFilterPhaseMixin):
         self.set_status(f"Built {built}/{total} profiles")
         self.refresh_display()
     
+    def _start_refresh_label_timer(self):
+        self._refresh_label_timer = self.frame.after(30_000, self._on_refresh_label_tick)
+
+    def _on_refresh_label_tick(self):
+        client = self.get_client() if self.get_client else None
+        if client:
+            self.update_refresh_labels(client.order_cache)
+        self._refresh_label_timer = self.frame.after(30_000, self._on_refresh_label_tick)
+
     def destroy(self):
         """Clean up."""
-        pass
+        if self._refresh_label_timer is not None:
+            self.frame.after_cancel(self._refresh_label_timer)
+            self._refresh_label_timer = None

@@ -18,7 +18,7 @@ Material Filter Optimization:
 import json
 import threading
 from dataclasses import dataclass, asdict, field
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Set, Tuple
 
@@ -337,6 +337,12 @@ def clear_material_risk_cache_for_region(region_id: int, hub_key: Optional[str] 
     print(f"{tag} Cleared cache for region {region_id} "
           f"({len(keys_to_remove)} entries)")
     material_risk_storage.delete_today_for_region(region_id)
+    data = _mf_load_run_times()
+    from config import TRADE_HUBS
+    hk = next((k for k, c in TRADE_HUBS.items() if c["region_id"] == region_id), None)
+    if hk and hk in data:
+        del data[hk]
+        _mf_save_run_times(data)
 
 
 def get_cached_material_risk(type_id: int, region_id: int):
@@ -516,6 +522,37 @@ class StockMarketFilterEngine:
 # Material Filter Tracker (Once Per Hub Per Day)
 # =============================================================================
 
+_MF_RUN_TIMES_PATH = get_data_dir() / "mf_run_times.json"
+_MF_MAX_AGE_SECONDS = 86400
+
+
+def _mf_load_run_times() -> dict:
+    try:
+        with open(_MF_RUN_TIMES_PATH, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _mf_save_run_times(data: dict):
+    try:
+        _MF_RUN_TIMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_MF_RUN_TIMES_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[MaterialFilter] Error saving run times: {e}")
+
+
+def _mf_is_within_24h(iso_str: str) -> bool:
+    try:
+        ts = datetime.fromisoformat(iso_str)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() < _MF_MAX_AGE_SECONDS
+    except Exception:
+        return False
+
+
 class MaterialFilterTracker:
     """Tracks which hubs have had material filter run today.
     
@@ -529,65 +566,51 @@ class MaterialFilterTracker:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._ran_today: Set[str] = set()
-            cls._instance._date = date.today()
         return cls._instance
-    
+
     def should_run(self, hub_key: str) -> bool:
-        """Check if material filter should run for this hub.
-        
-        Returns True if:
-        - New day (resets tracking)
-        - Hub hasn't been processed today (in-memory or persisted DB check)
-        
-        Cross-launch persistence: even if this is a fresh app launch and
-        the in-memory _ran_today set is empty, a DB query for today's
-        cached entries can confirm the filter already ran today.
+        """Return True if material filter should run for this hub.
+
+        Uses a 24h rolling window (JSON timestamp file) instead of a
+        calendar-day reset, so a midnight relaunch doesn't re-run MF
+        an hour after the previous run.
         """
-        # Reset if new day
-        if date.today() != self._date:
-            self._ran_today.clear()
-            self._date = date.today()
-            # Also clear the material risk cache for fresh analysis
-            global _material_risk_cache
-            _material_risk_cache.clear()
-            print(f"[MaterialFilter] New day - reset tracking and cache")
-        
-        # Fast path: already confirmed in this session
         if hub_key in self._ran_today:
-            print(f"[MaterialFilter] {hub_key}: skipping (already ran today)")
             return False
-        
-        # Cross-launch check: persisted rows from earlier today?
-        from config import TRADE_HUBS
-        hub_config = TRADE_HUBS.get(hub_key)
-        if hub_config:
-            region_id = hub_config["region_id"]
-            if material_risk_storage.has_today_data(region_id):
-                self._ran_today.add(hub_key)
-                print(f"[MaterialFilter] {hub_key}: skipping "
-                      f"(persisted data from earlier today)")
-                return False
-        
-        print(f"[MaterialFilter] {hub_key}: will run (first scan today)")
+
+        data = _mf_load_run_times()
+        if hub_key in data and _mf_is_within_24h(data[hub_key]):
+            self._ran_today.add(hub_key)
+            ts = datetime.fromisoformat(data[hub_key])
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_h = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+            print(f"[MaterialFilter] {hub_key}: skipping (ran {age_h:.1f}h ago)")
+            return False
+
+        print(f"[MaterialFilter] {hub_key}: will run")
         return True
-    
+
     def mark_complete(self, hub_key: str):
-        """Mark hub as having completed material filter today."""
+        """Mark hub as having completed material filter."""
         self._ran_today.add(hub_key)
-        print(f"[MaterialFilter] {hub_key}: marked complete for today")
-    
+        data = _mf_load_run_times()
+        data[hub_key] = datetime.now(timezone.utc).isoformat()
+        _mf_save_run_times(data)
+        print(f"[MaterialFilter] {hub_key}: marked complete")
+
     def has_run(self, hub_key: str) -> bool:
-        """Check if hub has already run today (no side effects)."""
-        if date.today() != self._date:
-            return False
-        return hub_key in self._ran_today
-    
+        """Check if hub has run within the last 24h (no side effects)."""
+        if hub_key in self._ran_today:
+            return True
+        data = _mf_load_run_times()
+        return hub_key in data and _mf_is_within_24h(data[hub_key])
+
     def get_status(self) -> Dict[str, Any]:
         """Get current tracking status for debugging."""
         return {
-            "date": str(self._date),
-            "hubs_completed": list(self._ran_today),
-            "is_current_day": date.today() == self._date,
+            "last_run_times": _mf_load_run_times(),
+            "hubs_completed_session": list(self._ran_today),
         }
 
 

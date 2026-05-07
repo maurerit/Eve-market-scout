@@ -18,6 +18,7 @@ from gui_stockmarket_settings import load_settings, save_settings
 from gui_stockmarket_hub import StockMarketHubPanel
 from gui_stockmarket_actions import StockMarketActionsMixin
 from gui_stockmarket_overlay import StockMarketOverlayMixin
+from gui_stockmarket_burst import StockMarketBurstMixin
 from stockmarket_filters import get_hub_burst_tracker
 
 if TYPE_CHECKING:
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
     from esi_wallet import ESIWallet
 
 
-class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
+class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMarketBurstMixin):
     """Main Stock Market tab with sub-tabs per trading hub."""
     
     def __init__(
@@ -637,7 +638,11 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
             if entry and entry.get('timestamp'):
                 age = (now - entry['timestamp']).total_seconds()
                 if age < 86400:
+                    print(f"[StockMarket] {hub_key}: cache fresh ({age/3600:.1f}h old)")
                     continue
+                print(f"[StockMarket] {hub_key}: cache stale ({age/3600:.1f}h old) - will pull")
+            else:
+                print(f"[StockMarket] {hub_key}: no cache entry - will pull")
             stale.append((hub_key, region_id, config["name"]))
         return stale
 
@@ -654,56 +659,4 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin):
             if client:
                 panel = self.hub_panels.get(hub_key)
                 if panel:
-                    panel.render_from_cache(client.order_cache)
-
-    def _run_daily_hub_burst(self):
-        """Pull any hub that hasn't had its daily burst today (EVE time).
-
-        Silent background pull — no overlay, no MF/LI chain.
-        The scanner may have already refreshed some hubs this tick; those
-        will show today's timestamp and be skipped by the tracker.
-        """
-        if not self.get_client:
-            return
-        client = self.get_client()
-        if not client:
-            return
-
-        tracker = get_hub_burst_tracker()
-        stale = [
-            (hub_key, region_id, name)
-            for hub_key, region_id, name in self._get_stale_hubs(client)
-            if tracker.should_run(hub_key, client.order_cache)
-        ]
-        if not stale:
-            return
-
-        hub_names = ", ".join(h for h, _, _ in stale)
-        print(f"[StockMarket] Daily burst: pulling {hub_names}")
-
-        def run_burst():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                async def do_burst():
-                    client.ensure_session()
-                    client.reset_for_new_loop()
-                    active = self._active_hub_key or self._get_current_hub_key()
-                    for hub_key, region_id, _ in stale:
-                        try:
-                            print(f"[StockMarket] Daily burst: {hub_key}")
-                            await client.get_market_orders(region_id)
-                            tracker.mark_complete(hub_key)
-                            if hub_key == active:
-                                panel = self.hub_panels.get(hub_key)
-                                if panel:
-                                    submit(lambda p=panel: p.render_from_cache(
-                                        client.order_cache))
-                        except Exception as e:
-                            print(f"[StockMarket] Daily burst failed "
-                                  f"for {hub_key}: {e}")
-                loop.run_until_complete(do_burst())
-            finally:
-                loop.close()
-
-        threading.Thread(target=run_burst, daemon=True).start()
+                    self._pull_active_region_if_stale(hub_key, panel, client)

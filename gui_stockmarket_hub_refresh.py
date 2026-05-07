@@ -6,9 +6,46 @@ Provides: refresh_display_async, _get_trend_for_data, _li_lookup_for_data,
 """
 
 import threading
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Callable
 
 from tk_queue import submit
+
+
+def _fmt_ago(dt_utc, now_utc=None) -> str:
+    if dt_utc is None:
+        return "--"
+    now = now_utc or datetime.now(timezone.utc)
+    if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+    secs = (now - dt_utc).total_seconds()
+    if secs < 60:
+        return "just now"
+    mins = int(secs // 60)
+    if mins < 60:
+        return f"{mins}m ago"
+    h = mins // 60
+    m = mins % 60
+    return f"{h}h {m}m ago" if m else f"{h}h ago"
+
+
+def _fmt_until(dt_utc, now_utc=None) -> str:
+    if dt_utc is None:
+        return "--"
+    now = now_utc or datetime.now(timezone.utc)
+    if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+    secs = (dt_utc - now).total_seconds()
+    if secs <= 0:
+        return "due"
+    if secs < 60:
+        return "< 1m"
+    mins = int(secs // 60)
+    if mins < 60:
+        return f"in {mins}m"
+    h = mins // 60
+    m = mins % 60
+    return f"in {h}h {m}m" if m else f"in {h}h"
 
 
 class HubPanelRefreshMixin:
@@ -39,6 +76,16 @@ class HubPanelRefreshMixin:
             self.update_live_prices(prices)
         self.update_refresh_labels(order_cache)
         return bool(prices)
+
+    def update_refresh_labels(self, order_cache):
+        """Update last_refreshed / next_refresh labels from the order cache."""
+        now = datetime.now(timezone.utc)
+        entry = order_cache._order_cache.get(self.region_id, {})
+        ts = entry.get("timestamp")
+        expires = entry.get("expires")
+        self._last_refreshed_var.set(f"Updated: {_fmt_ago(ts, now)}")
+        nxt = expires or (ts + timedelta(minutes=5) if ts else None)
+        self._next_refresh_var.set(f"Next: {_fmt_until(nxt, now)}")
 
     def refresh_display_async(self, after: Optional[Callable[[], None]] = None):
         """Refresh display without blocking UI.
