@@ -244,19 +244,27 @@ class StockMarketActionsMixin:
             try:
                 from market_history import get_market_history_db
                 db = get_market_history_db()
-                
+
+                region_item_count = len(db.get_items_in_region(region_id))
+                if region_item_count == 0:
+                    submit(lambda: self.set_status(
+                        f"No history data for {hub_name} — import the everef archive first"
+                    ))
+                    submit(lambda: setattr(self, '_profiles_building', False))
+                    return
+
                 def progress(msg: str, current: int, total: int):
                     if current % 500 == 0:
                         submit(lambda: self.set_status(
                             f"Building profiles: {current}/{total} items"
                         ))
-                
+
                 success, failed = self.profiles.extract_all_from_db(
                     region_id=region_id,
                     market_db=db,
                     progress_callback=progress
                 )
-                
+
                 submit(lambda: self._on_profiles_built(hub_key, success, failed))
                 
             except Exception as e:
@@ -331,13 +339,8 @@ class StockMarketActionsMixin:
         if not result:
             return
         
-        count = self.profiles.clear_region_profiles(region_id)
-        self.set_status(f"Cleared {count} profiles for {hub_name}")
-        
-        # Refresh display
-        panel = self.hub_panels.get(hub_key)
-        if panel:
-            panel.refresh_display_async()
+        self.profiles.clear_region_profiles(region_id)
+        self._build_profiles_for_hub(hub_key, region_id, hub_name)
 
     # =========================================================================
     # Settings
