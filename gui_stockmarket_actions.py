@@ -273,8 +273,8 @@ class StockMarketActionsMixin:
         # Refresh the current hub display
         panel = self.hub_panels.get(hub_key)
         if panel:
-            panel.refresh_display()
-    
+            panel.refresh_display_async()
+
     def _on_profiles_build_error(self, error: str):
         """Called when profile building fails."""
         self._profiles_building = False
@@ -337,8 +337,8 @@ class StockMarketActionsMixin:
         # Refresh display
         panel = self.hub_panels.get(hub_key)
         if panel:
-            panel.refresh_display()
-    
+            panel.refresh_display_async()
+
     # =========================================================================
     # Settings
     # =========================================================================
@@ -376,14 +376,9 @@ class StockMarketActionsMixin:
                 config = get_hub_config(hub_key)
                 region_id = config["region_id"]
                 
-                # Clear old profiles
-                count = self.profiles.clear_region_profiles(region_id)
-                self.set_status(f"Settings saved - rebuilding {count} profiles for {config['name']}...")
-                
-                # Refresh will trigger rebuild on demand
-                panel = self.hub_panels.get(hub_key)
-                if panel:
-                    panel.refresh_display()
+                # Clear old profiles and rebuild from archive at new percentiles
+                self.profiles.clear_region_profiles(region_id)
+                self._build_profiles_for_hub(hub_key, region_id, config["name"])
             else:
                 self.set_status("Settings saved - profiles will rebuild on next access")
         else:

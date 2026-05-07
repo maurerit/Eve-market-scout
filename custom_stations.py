@@ -66,11 +66,24 @@ def add_custom_station(station_dict: dict, in_stock_market: bool = False) -> str
 
 
 def remove_custom_station(hub_key: str):
-    """Remove a custom station from disk and TRADE_HUBS."""
+    """Remove a custom station entirely from disk and TRADE_HUBS."""
     from config import TRADE_HUBS
     stations = [s for s in load_custom_stations() if s["hub_key"] != hub_key]
     save_custom_stations(stations)
     TRADE_HUBS.pop(hub_key, None)
+
+
+def update_station_in_stockmarket(hub_key: str, in_stock_market: bool):
+    """Flip the in_stock_market flag without removing the station from the scanner."""
+    from config import TRADE_HUBS
+    stations = load_custom_stations()
+    for s in stations:
+        if s["hub_key"] == hub_key:
+            s["in_stock_market"] = in_stock_market
+            break
+    save_custom_stations(stations)
+    if hub_key in TRADE_HUBS:
+        TRADE_HUBS[hub_key]["in_stock_market"] = in_stock_market
 
 
 def _bootstrap():

@@ -413,7 +413,18 @@ class ProfileManager(ProfileExtractionMixin):
                     print(f"[Profiles] get_all_profiles failed after 3 attempts - returning empty")
                     return []
         return []
-    
+
+    def clear_region_profiles(self, region_id: int) -> int:
+        """Delete all profiles for a region. Returns count of computed_profiles deleted."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM computed_profiles WHERE region_id = ?", (region_id,))
+        count = cursor.rowcount
+        cursor.execute("DELETE FROM yearly_stats WHERE region_id = ?", (region_id,))
+        conn.commit()
+        conn.close()
+        return count
+
     def get_profiles_for_region(self, region_id: int) -> List[ComputedProfile]:
         """Get all computed profiles for a specific region.
         

@@ -162,6 +162,20 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
             pass
         return None
 
+    def remove_hub_tab(self, hub_key: str):
+        """Remove a custom station's tab from the stock market notebook."""
+        if hub_key not in self.hub_panels:
+            return
+        hub_keys = list(self.hub_panels.keys())
+        idx = hub_keys.index(hub_key)
+        try:
+            tab_ids = self.hub_notebook.tabs()
+            if idx < len(tab_ids):
+                self.hub_notebook.forget(tab_ids[idx])
+        except Exception:
+            pass
+        del self.hub_panels[hub_key]
+
     def add_hub_tab(self, hub_key: str):
         """Dynamically add a stock market tab for a newly registered custom station."""
         if hub_key in self.hub_panels:

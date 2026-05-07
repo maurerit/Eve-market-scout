@@ -324,13 +324,20 @@ class ESIClient(TypeNameMixin):
             fetch_lock.release()
 
     async def _get_page_safe(self, endpoint: str, page: int) -> list | None:
-        """Fetch a page, returning None on 404 (stale pagination)."""
-        try:
-            return await self._get(endpoint, {"page": page})
-        except aiohttp.ClientResponseError as e:
-            if e.status == 404:
-                return None
-            raise
+        """Fetch a page, returning None on 404 (stale pagination). Retries once on timeout."""
+        for attempt in range(2):
+            try:
+                return await self._get(endpoint, {"page": page})
+            except aiohttp.ClientResponseError as e:
+                if e.status == 404:
+                    return None
+                raise
+            except (asyncio.TimeoutError, TimeoutError):
+                if attempt == 0:
+                    print(f"[ESI] Timeout on {endpoint} page {page}, retrying...")
+                else:
+                    print(f"[ESI] Timeout on {endpoint} page {page}, skipping page")
+                    return None
 
     def get_system_security(self, system_id: int) -> float:
         """Get cached security status for a system."""

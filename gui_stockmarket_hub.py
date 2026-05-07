@@ -320,7 +320,7 @@ class StockMarketHubPanel(HubPanelRefreshMixin, HubFilterPhaseMixin):
     def update_settings(self, settings: "StockMarketSettings"):
         """Update settings reference."""
         self.settings = settings
-        self.refresh_display()
+        self.refresh_display_async()
     
     def update_live_prices(self, prices: Dict[int, float]):
         """Update live prices in all sub-tabs.

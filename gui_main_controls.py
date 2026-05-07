@@ -240,23 +240,30 @@ class MainControlsMixin:
         open_data_folder()
 
     def _on_add_station(self):
-        """Open the Add Custom Station dialog."""
+        """Open the Add / Manage Custom Stations dialog."""
         from gui_add_station import AddStationDialog
         AddStationDialog(
             parent=self.root,
             get_client=self.get_client,
             on_station_added=self._on_custom_station_added,
             on_add_to_stockmarket=self._on_custom_station_to_stockmarket,
+            on_station_removed=self._on_custom_station_removed,
+            on_remove_from_stockmarket=self._on_custom_station_removed_from_sm,
         )
 
     def _on_custom_station_added(self, hub_key: str):
-        """Refresh scanner dropdowns after a new custom station is added."""
         self.refresh_station_dropdowns()
 
     def _on_custom_station_to_stockmarket(self, hub_key: str):
-        """Add a new tab to the stock market notebook."""
         if hasattr(self, "stock_market_tab"):
             self.stock_market_tab.add_hub_tab(hub_key)
+
+    def _on_custom_station_removed(self, hub_key: str):
+        self.refresh_station_dropdowns()
+
+    def _on_custom_station_removed_from_sm(self, hub_key: str):
+        if hasattr(self, "stock_market_tab"):
+            self.stock_market_tab.remove_hub_tab(hub_key)
 
     def refresh_station_dropdowns(self):
         """Rebuild buy/sell combobox values to include any new custom stations."""
