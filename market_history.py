@@ -392,7 +392,40 @@ class MarketHistoryDB(MarketHistoryImportMixin):
         """, (region_id, type_id, cutoff))
         
         return [dict(row) for row in cursor.fetchall()]
-    
+
+    def get_full_history_bulk(
+        self, region_id: int, type_ids: List[int], years: int = 3
+    ) -> Dict[int, List[Dict[str, Any]]]:
+        """Get full history for multiple items in batched IN-clause queries.
+
+        Replaces N individual get_full_history() calls with a small number
+        of queries batched at 500 items each.  Returns dict keyed by
+        type_id; items with no history get empty lists.
+        """
+        if not type_ids:
+            return {}
+        conn = self._get_conn()
+        cutoff = (date.today() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
+        result: Dict[int, List[Dict[str, Any]]] = {tid: [] for tid in type_ids}
+        BATCH = 500
+        for i in range(0, len(type_ids), BATCH):
+            batch = type_ids[i : i + BATCH]
+            placeholders = ",".join("?" * len(batch))
+            cursor = conn.execute(
+                f"""
+                SELECT type_id, date, average, lowest, highest, volume, order_count
+                FROM daily_history
+                WHERE region_id = ? AND type_id IN ({placeholders}) AND date >= ?
+                ORDER BY type_id, date ASC
+                """,
+                [region_id] + batch + [cutoff],
+            )
+            for row in cursor.fetchall():
+                tid = row["type_id"]
+                if tid in result:
+                    result[tid].append(dict(row))
+        return result
+
     def get_yearly_data(self, region_id: int, type_id: int,
                         year: int) -> List[Dict[str, Any]]:
         """Get all records for a specific year.

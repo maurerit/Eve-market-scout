@@ -134,22 +134,28 @@ class LeadingIndicatorResult:
 # =============================================================================
 
 def compute_leading_indicators(
-    type_id: int, region_id: int
+    type_id: int,
+    region_id: int,
+    history: Optional[List[dict]] = None,
 ) -> Optional[LeadingIndicatorResult]:
     """Compute leading indicators for one (type_id, region_id) pair.
 
-    Returns None if no history data is available. Returns a result with
-    HEALTHY verdict if the data is there but no divergence flags fire.
-    """
-    from market_history import get_market_history_db
+    Args:
+        history: Pre-fetched history records (from get_full_history_bulk).
+            When provided the DB fetch is skipped entirely.  Pass None to
+            let this function fetch its own history (single-item path).
 
-    try:
-        market_db = get_market_history_db()
-        history = market_db.get_full_history(region_id, type_id, years=3)
-    except Exception as e:
-        print(f"[LeadingIndicators] fetch error type={type_id} "
-              f"region={region_id}: {e}")
-        return None
+    Returns None if no history data is available.
+    """
+    if history is None:
+        from market_history import get_market_history_db
+        try:
+            market_db = get_market_history_db()
+            history = market_db.get_full_history(region_id, type_id, years=3)
+        except Exception as e:
+            print(f"[LeadingIndicators] fetch error type={type_id} "
+                  f"region={region_id}: {e}")
+            return None
 
     if not history:
         return None

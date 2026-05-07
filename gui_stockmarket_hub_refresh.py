@@ -110,38 +110,40 @@ class HubPanelRefreshMixin:
                 self._li_cache_for_routing = None
 
                 risk_data = {"low": [], "medium": [], "high": []}
-                all_profiles = self.profiles.get_all_profiles()
-                region_profiles = [
-                    p for p in all_profiles if p.region_id == self.region_id
-                ]
+                region_profiles = self.profiles.get_profiles_for_region(self.region_id)
 
                 print(
-                    f"[StockMarket-{self.hub_key}] Found {len(all_profiles)} total "
-                    f"profiles, {len(region_profiles)} for region {self.region_id}"
+                    f"[StockMarket-{self.hub_key}] Found {len(region_profiles)} "
+                    f"profiles for region {self.region_id}"
                 )
 
                 all_stats = self.profiles.get_all_yearly_stats_for_region(
                     self.region_id, context_label=self.hub_key
                 )
 
+                # First pass: classify trends without any DB I/O
+                classified = []
                 for profile in region_profiles:
                     yearly_stats = all_stats.get(profile.type_id, {})
                     trend = self._get_trend_for_data(yearly_stats, profile)
                     if trend not in risk_data:
                         continue
-
-                    type_name = (
-                        sde.get_type_name(profile.type_id) or f"Type {profile.type_id}"
-                    )
-                    current_price = self.live_prices.get(profile.type_id, 0)
                     trend_tag = self._get_trend_tag_for_data(yearly_stats)
+                    classified.append((trend, profile, trend_tag))
 
+                # One bulk name fetch instead of N individual DB queries
+                name_map = sde.get_type_names_bulk(
+                    [p.type_id for _, p, _ in classified]
+                )
+
+                for trend, profile, trend_tag in classified:
                     risk_data[trend].append(
                         {
                             "type_id": profile.type_id,
-                            "type_name": type_name,
+                            "type_name": name_map.get(profile.type_id)
+                            or f"Type {profile.type_id}",
                             "profile": profile,
-                            "current_price": current_price,
+                            "current_price": self.live_prices.get(profile.type_id, 0),
                             "trend_tag": trend_tag,
                         }
                     )

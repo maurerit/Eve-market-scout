@@ -240,21 +240,27 @@ def analyze_material_dip(
     market_db: Optional[MarketHistoryDB] = None,
     recent_floor_cache: Optional[Dict[int, float]] = None,
     baseline_floor_cache: Optional[Dict[int, float]] = None,
+    item_floor_recent_cache: Optional[Dict[int, float]] = None,
+    item_floor_baseline_cache: Optional[Dict[int, float]] = None,
 ) -> MaterialAnalysisResult:
     """Analyze whether an item's price dip correlates with material costs.
-    
+
     Compares recent (0-3 month) floors against baseline (3-6 month) floors
     for both the item and its Total Build Cost.
-    
+
     Args:
         type_id: Item type ID to analyze
         region_id: Region ID for item price (materials always use Jita)
         market_db: Market history database (uses singleton if not provided)
-        recent_floor_cache: Optional pre-computed {material_type_id: floor}
-            dict for the recent period.  See prebuild_material_floor_cache().
-        baseline_floor_cache: Optional pre-computed {material_type_id: floor}
-            dict for the baseline period.
-        
+        recent_floor_cache: Pre-computed {material_type_id: floor} for the
+            recent period (material floors, Jita).
+        baseline_floor_cache: Pre-computed dict for baseline period (materials).
+        item_floor_recent_cache: Pre-computed {type_id: floor} for the item's
+            own recent floor in the hub region.  Skips calculate_period_floor
+            when provided.
+        item_floor_baseline_cache: Pre-computed {type_id: floor} for item
+            baseline floor.
+
     Returns:
         MaterialAnalysisResult with classification and metrics
     """
@@ -295,15 +301,19 @@ def analyze_material_dip(
             material_count=0, materials_analyzed=0
         )
     
-    # Calculate item floors
-    # Recent: 0-3 months ago
-    # Baseline: 3-6 months ago
-    item_floor_recent = calculate_period_floor(
-        type_id, region_id, SHORT_PERIOD_DAYS, 0, market_db
-    )
-    item_floor_baseline = calculate_period_floor(
-        type_id, region_id, MEDIUM_PERIOD_DAYS, SHORT_PERIOD_DAYS, market_db
-    )
+    # Calculate item floors (use pre-built cache when available)
+    if item_floor_recent_cache is not None:
+        item_floor_recent = item_floor_recent_cache.get(type_id)
+    else:
+        item_floor_recent = calculate_period_floor(
+            type_id, region_id, SHORT_PERIOD_DAYS, 0, market_db
+        )
+    if item_floor_baseline_cache is not None:
+        item_floor_baseline = item_floor_baseline_cache.get(type_id)
+    else:
+        item_floor_baseline = calculate_period_floor(
+            type_id, region_id, MEDIUM_PERIOD_DAYS, SHORT_PERIOD_DAYS, market_db
+        )
     
     if item_floor_recent is None or item_floor_baseline is None:
         return MaterialAnalysisResult(

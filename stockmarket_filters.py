@@ -239,6 +239,8 @@ def check_material_risk(
     region_id: int,
     recent_floor_cache: Optional[Dict[int, float]] = None,
     baseline_floor_cache: Optional[Dict[int, float]] = None,
+    item_floor_recent_cache: Optional[Dict[int, float]] = None,
+    item_floor_baseline_cache: Optional[Dict[int, float]] = None,
     hub_key: Optional[str] = None,
 ) -> str:
     """Check material correlation for risk adjustment.
@@ -282,11 +284,13 @@ def check_material_risk(
             material_risk_storage.save_entry(type_id, region_id, result)
             return result
         
-        # Run analysis (passes pre-computed material floors when provided)
+        # Run analysis (passes pre-computed floor caches when provided)
         analysis = analyze_material_dip(
             type_id, region_id,
             recent_floor_cache=recent_floor_cache,
             baseline_floor_cache=baseline_floor_cache,
+            item_floor_recent_cache=item_floor_recent_cache,
+            item_floor_baseline_cache=item_floor_baseline_cache,
         )
         
         if analysis.classification == 'buy':

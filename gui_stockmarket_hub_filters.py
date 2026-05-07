@@ -226,11 +226,7 @@ class HubFilterPhaseMixin:
             )
 
             # Walk profiles to find stable-floor candidates
-            all_profiles = self.profiles.get_all_profiles()
-            region_profiles = [
-                p for p in all_profiles
-                if p.region_id == self.region_id
-            ]
+            region_profiles = self.profiles.get_profiles_for_region(self.region_id)
 
             # Batched fetch - one query instead of N connections
             all_stats = self.profiles.get_all_yearly_stats_for_region(
@@ -288,6 +284,23 @@ class HubFilterPhaseMixin:
                     )
 
             # ---------------------------------------------------------
+            # Pre-build item price floor cache for all stable candidates.
+            # Two aggregated SQL queries instead of 2*N per-item queries.
+            # ---------------------------------------------------------
+            item_recent_floors: Dict[int, float] = {}
+            item_baseline_floors: Dict[int, float] = {}
+            if stable_profiles:
+                stable_type_ids = [p.type_id for p in stable_profiles]
+                item_recent_floors, item_baseline_floors = (
+                    prebuild_material_floor_cache(
+                        stable_type_ids,
+                        market_db,
+                        region_id=self.region_id,
+                        context_label=f"{self.hub_key}-items",
+                    )
+                )
+
+            # ---------------------------------------------------------
             # Iterate stable candidates, populate material risk cache.
             # Throttle progress updates to every 10 items to keep the
             # main-thread queue light.
@@ -305,6 +318,8 @@ class HubFilterPhaseMixin:
                     self.region_id,
                     recent_floor_cache=recent_floors,
                     baseline_floor_cache=baseline_floors,
+                    item_floor_recent_cache=item_recent_floors,
+                    item_floor_baseline_cache=item_baseline_floors,
                     hub_key=self.hub_key,
                 )
                 analyzed += 1
@@ -396,15 +411,22 @@ class HubFilterPhaseMixin:
         li_tracker = get_leading_indicators_tracker()
 
         try:
-            all_profiles = self.profiles.get_all_profiles()
-            region_profiles = [
-                p for p in all_profiles
-                if p.region_id == self.region_id
-            ]
+            from market_history import get_market_history_db
+            region_profiles = self.profiles.get_profiles_for_region(self.region_id)
             total = len(region_profiles)
             print(f"[StockMarket-{self.hub_key}] "
                   f"=== PHASE: Leading Indicators === "
                   f"({total} items, region {self.region_id})")
+
+            # Pre-fetch 3yr history for all region items in one pass so
+            # compute_leading_indicators skips its per-item DB call.
+            market_db = get_market_history_db()
+            type_ids_list = [p.type_id for p in region_profiles]
+            all_history = market_db.get_full_history_bulk(
+                self.region_id, type_ids_list, years=3
+            )
+            print(f"[StockMarket-{self.hub_key}] LI history pre-fetched "
+                  f"({sum(len(v) for v in all_history.values())} rows)")
 
             # Switch overlay to determinate progress
             submit(lambda t=total: self._show_filter_overlay(
@@ -423,7 +445,8 @@ class HubFilterPhaseMixin:
             for idx, profile in enumerate(region_profiles, start=1):
                 try:
                     result = compute_leading_indicators(
-                        profile.type_id, self.region_id
+                        profile.type_id, self.region_id,
+                        history=all_history.get(profile.type_id, []),
                     )
                     if result is not None:
                         results.append(result)
