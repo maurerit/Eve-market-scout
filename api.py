@@ -49,6 +49,13 @@ class ESIClient(TypeNameMixin):
         # Shared per-region order cache (scanner <-> stock market)
         self.order_cache = OrderCacheStore()
 
+        # Backfill legacy Jita fields from disk-loaded cache so has_jita_cache()
+        # returns True on startup without forcing a fresh ESI fetch.
+        _jita_entry = self.order_cache._order_cache.get(JITA_REGION_ID)
+        if _jita_entry and _jita_entry.get('orders'):
+            self.jita_orders_cache = _jita_entry['orders']
+            self.jita_orders_timestamp = _jita_entry.get('timestamp')
+
     def reset_for_new_loop(self):
         """Reset async primitives for a new event loop. Preserves caches."""
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)

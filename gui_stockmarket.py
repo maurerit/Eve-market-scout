@@ -117,15 +117,18 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         self.hub_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
         self.hub_notebook.bind("<<NotebookTabChanged>>", self._on_hub_tab_changed)
 
-        # Create a panel for each enabled hub
+        # Create a panel for each enabled hub.
+        # Custom stations only appear here if in_stock_market is True.
         for hub_key, config in TRADE_HUBS.items():
             if not config.get("enabled", True):
                 continue
-            
+            if config.get("custom") and not config.get("in_stock_market"):
+                continue
+
             # Frame for this hub's tab
             hub_frame = ttk.Frame(self.hub_notebook)
             self.hub_notebook.add(hub_frame, text=config["name"])
-            
+
             # Create the hub panel
             panel = StockMarketHubPanel(
                 parent=hub_frame,
@@ -141,30 +144,47 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         """Get the currently selected hub panel."""
         try:
             current_tab = self.hub_notebook.index(self.hub_notebook.select())
-            hub_keys = [k for k, c in TRADE_HUBS.items() if c.get("enabled", True)]
+            hub_keys = list(self.hub_panels.keys())
             if current_tab < len(hub_keys):
                 return self.hub_panels.get(hub_keys[current_tab])
         except Exception:
             pass
         return None
-    
+
     def _get_current_hub_key(self) -> Optional[str]:
         """Get the currently selected hub key."""
         try:
             current_tab = self.hub_notebook.index(self.hub_notebook.select())
-            hub_keys = [k for k, c in TRADE_HUBS.items() if c.get("enabled", True)]
+            hub_keys = list(self.hub_panels.keys())
             if current_tab < len(hub_keys):
                 return hub_keys[current_tab]
         except Exception:
             pass
         return None
+
+    def add_hub_tab(self, hub_key: str):
+        """Dynamically add a stock market tab for a newly registered custom station."""
+        if hub_key in self.hub_panels:
+            return
+        config = get_hub_config(hub_key)
+        hub_frame = ttk.Frame(self.hub_notebook)
+        self.hub_notebook.add(hub_frame, text=config["name"])
+        panel = StockMarketHubPanel(
+            parent=hub_frame,
+            hub_key=hub_key,
+            settings=self.settings,
+            profiles=self.profiles,
+            get_client=self.get_client,
+            set_status=self.set_status,
+        )
+        self.hub_panels[hub_key] = panel
     
     def _restore_active_tab(self):
         """Select the last-active hub tab from saved settings."""
         saved = self.settings.active_hub_key
         if not saved:
             return
-        hub_keys = [k for k, c in TRADE_HUBS.items() if c.get("enabled", True)]
+        hub_keys = list(self.hub_panels.keys())
         if saved in hub_keys:
             idx = hub_keys.index(saved)
             try:

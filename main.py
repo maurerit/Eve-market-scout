@@ -150,6 +150,7 @@ _setup_exception_handler()
 # IMPORTS (after logging setup so we capture any import errors)
 # =============================================================================
 
+import custom_stations  # noqa: F401 — populates TRADE_HUBS before GUI init
 from api import ESIClient
 from scanner import MarketScanner
 from scanner_common import ScanResult

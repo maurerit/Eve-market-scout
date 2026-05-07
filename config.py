@@ -90,6 +90,17 @@ def get_enabled_hubs() -> list[tuple[str, str]]:
     return result
 
 
+def register_custom_station(station_dict: dict):
+    """Merge a custom station entry into TRADE_HUBS at runtime.
+
+    Called by custom_stations.py at startup and by AddStationDialog when
+    the user adds a new station.  No-op if the key is already present.
+    """
+    key = station_dict.get("hub_key")
+    if key and key not in TRADE_HUBS:
+        TRADE_HUBS[key] = {**station_dict, "enabled": True, "custom": True}
+
+
 # Filtering thresholds (defaults - can be overridden in the GUI)
 MIN_PROFIT_PER_UNIT = 1_000   # Minimum profit per item in ISK
 MIN_TOTAL_PROFIT = 200_000    # Minimum total profit (profit Ãƒâ€” volume)

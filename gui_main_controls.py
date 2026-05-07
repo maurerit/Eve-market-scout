@@ -150,6 +150,15 @@ class MainControlsMixin:
         )
         self.countdown_label.pack(side=tk.LEFT, padx=10)
 
+        # Add Station button
+        self.add_station_btn = ttk.Button(
+            control_frame,
+            text="Add Station",
+            command=self._on_add_station,
+            width=11,
+        )
+        self.add_station_btn.pack(side=tk.LEFT, padx=5)
+
         # Status label
         self.status_label = ttk.Label(
             control_frame,
@@ -229,6 +238,34 @@ class MainControlsMixin:
     def _open_data_folder(self):
         """Open the data folder in system file manager."""
         open_data_folder()
+
+    def _on_add_station(self):
+        """Open the Add Custom Station dialog."""
+        from gui_add_station import AddStationDialog
+        AddStationDialog(
+            parent=self.root,
+            get_client=self.get_client,
+            on_station_added=self._on_custom_station_added,
+            on_add_to_stockmarket=self._on_custom_station_to_stockmarket,
+        )
+
+    def _on_custom_station_added(self, hub_key: str):
+        """Refresh scanner dropdowns after a new custom station is added."""
+        self.refresh_station_dropdowns()
+
+    def _on_custom_station_to_stockmarket(self, hub_key: str):
+        """Add a new tab to the stock market notebook."""
+        if hasattr(self, "stock_market_tab"):
+            self.stock_market_tab.add_hub_tab(hub_key)
+
+    def refresh_station_dropdowns(self):
+        """Rebuild buy/sell combobox values to include any new custom stations."""
+        from config import get_enabled_hubs
+        hub_choices = get_enabled_hubs()
+        hub_display_names = [name for key, name in hub_choices]
+        self.hub_keys = [key for key, name in hub_choices]
+        self.buy_station_dropdown.configure(values=hub_display_names)
+        self.sell_station_dropdown.configure(values=hub_display_names)
 
     def _schedule_auto_refresh(self):
         """Schedule the next auto-refresh based on ESI cache expiry."""
