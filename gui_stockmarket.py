@@ -599,6 +599,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         already ran today for a hub, that hub falls back to a normal
         async refresh (reading existing cached results).
         """
+        print(f"[StockMarket] === _apply_material_filter_all: "
+              f"{len(self.hub_panels)} hubs ===")
         for panel in self.hub_panels.values():
             panel.apply_material_filter()
 

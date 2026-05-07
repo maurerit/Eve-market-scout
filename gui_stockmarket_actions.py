@@ -239,7 +239,13 @@ class StockMarketActionsMixin:
         """Build profiles for a hub from market history database."""
         self._profiles_building = True
         self.set_status(f"Building profiles for {hub_name}...")
-        
+
+        panel = self.hub_panels.get(hub_key)
+        if panel:
+            submit(lambda: panel._show_filter_overlay(
+                f"Building profiles for {hub_name}…", total=0
+            ))
+
         def build():
             try:
                 from market_history import get_market_history_db
@@ -247,16 +253,38 @@ class StockMarketActionsMixin:
 
                 region_item_count = len(db.get_items_in_region(region_id))
                 if region_item_count == 0:
+                    if panel:
+                        submit(lambda: panel._hide_filter_overlay())
                     submit(lambda: self.set_status(
                         f"No history data for {hub_name} — import the everef archive first"
                     ))
                     submit(lambda: setattr(self, '_profiles_building', False))
                     return
 
+                print(f"[StockMarket-{hub_key}] === PHASE: Profile Build === "
+                      f"(region {region_id}, {region_item_count} items)")
+
+                if panel:
+                    submit(lambda c=region_item_count: panel._show_filter_overlay(
+                        f"Building profiles: 0/{c:,}", total=c
+                    ))
+
+                import time as _time
+                _build_start = _time.time()
+
                 def progress(msg: str, current: int, total: int):
-                    if current % 500 == 0:
-                        submit(lambda: self.set_status(
-                            f"Building profiles: {current}/{total} items"
+                    if current % 200 == 0 and total > 0:
+                        elapsed = _time.time() - _build_start
+                        pct = current * 100 // total
+                        rate = current / elapsed if elapsed > 0 else 0
+                        eta = int((total - current) / rate) if rate > 0 else 0
+                        label = (f"Building profiles: "
+                                 f"{current:,}/{total:,} ({pct}%) ~{eta}s left")
+                        if panel:
+                            submit(lambda s=label, c=current:
+                                   panel._update_filter_overlay(c, s))
+                        submit(lambda s=label: self.set_status(
+                            f"[{hub_name}] {s}"
                         ))
 
                 success, failed = self.profiles.extract_all_from_db(
@@ -265,21 +293,34 @@ class StockMarketActionsMixin:
                     progress_callback=progress
                 )
 
+                elapsed = _time.time() - _build_start
+                print(f"[StockMarket-{hub_key}] Profile build complete: "
+                      f"{success} ok, {failed} failed in {elapsed:.1f}s")
+
                 submit(lambda: self._on_profiles_built(hub_key, success, failed))
-                
+
             except Exception as e:
                 print(f"[StockMarket] Profile build error: {e}")
+                if panel:
+                    submit(lambda: panel._hide_filter_overlay())
                 submit(lambda: self._on_profiles_build_error(str(e)))
-        
+
         threading.Thread(target=build, daemon=True).start()
-    
+
     def _on_profiles_built(self, hub_key: str, success: int, failed: int):
         """Called when automatic profile building completes."""
         self._profiles_building = False
-        self.set_status(f"Built {success} profiles ({failed} failed) - click Refresh Prices")
-        
-        # Refresh the current hub display
+
         panel = self.hub_panels.get(hub_key)
+        config = get_hub_config(hub_key)
+        hub_name = config["name"] if config else hub_key
+
+        if panel:
+            panel._hide_filter_overlay()
+
+        self.set_status(f"[{hub_name}] Built {success:,} profiles "
+                        f"({failed} failed) — refreshing…")
+
         if panel:
             panel.refresh_display_async()
 

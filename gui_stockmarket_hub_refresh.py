@@ -283,6 +283,8 @@ class HubPanelRefreshMixin:
             after: Optional callback invoked after the UI has been
                 updated.  Used to hide the lock overlay.
         """
+        import time as _time
+        _t0 = _time.time()
         print(f"[StockMarket-{self.hub_key}] _apply_refresh_data called")
 
         for risk_level, items in risk_data.items():
@@ -296,7 +298,8 @@ class HubPanelRefreshMixin:
 
         self._update_ticker()
 
-        print(f"[StockMarket-{self.hub_key}] _apply_refresh_data complete")
+        print(f"[StockMarket-{self.hub_key}] _apply_refresh_data complete "
+              f"({_time.time() - _t0:.1f}s)")
 
         if after is not None:
             try:

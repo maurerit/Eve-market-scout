@@ -179,14 +179,25 @@ class ProfileExtractionMixin(ProfileCSVMixin):
         current_year = date.today().year
         years_to_process = [current_year - i for i in range(MAX_YEARS_BACK + 1)]
         
+        PRINT_EVERY = max(1, total_items // 10)  # ~10 console milestones
+
         for idx, type_id in enumerate(type_ids):
             if cancel_check and cancel_check():
                 print(f"[Profile-DB Batch] Cancelled at item {idx}/{total_items}")
                 break
-            
+
+            if idx > 0 and idx % PRINT_EVERY == 0:
+                elapsed = time.time() - start_time
+                pct = idx * 100 // total_items
+                rate = idx / elapsed if elapsed > 0 else 0
+                eta = (total_items - idx) / rate if rate > 0 else 0
+                print(f"[Profile-DB Batch] {pct}% — {idx}/{total_items} "
+                      f"({success_count} ok, {fail_count} skip) "
+                      f"{elapsed:.0f}s elapsed, ~{eta:.0f}s remaining")
+
             if progress_callback and idx % 100 == 0:
                 progress_callback(f"Processing item {idx}/{total_items}", idx, total_items)
-            
+
             # Get history for this item
             history = market_db.get_full_history(region_id, type_id, years=MAX_YEARS_BACK + 1)
             
@@ -228,7 +239,8 @@ class ProfileExtractionMixin(ProfileCSVMixin):
         # Batch save
         if progress_callback:
             progress_callback("Saving to database...", total_items, total_items)
-        
+        print(f"[Profile-DB Batch] Saving {len(all_yearly_stats)} yearly-stat rows "
+              f"and {len(all_profiles)} profiles to DB...")
         if all_yearly_stats:
             self._save_yearly_stats_batch(all_yearly_stats)
         if all_profiles:
