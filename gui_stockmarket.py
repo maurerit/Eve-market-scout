@@ -58,6 +58,7 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         # Hub panels
         self.hub_panels: Dict[str, StockMarketHubPanel] = {}
         self._active_hub_key: Optional[str] = None
+        self._history_fetched_regions: set[int] = set()
         
         # Create main frame
         self.frame = ttk.Frame(notebook)
@@ -206,6 +207,9 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
                 self._active_hub_key = saved
             except Exception:
                 pass
+        panel = self.hub_panels.get(self._active_hub_key) if self._active_hub_key else None
+        if panel:
+            self._ensure_region_history(panel.region_id)
 
     def _on_hub_tab_changed(self, event=None):
         hub_key = self._get_current_hub_key()
@@ -219,6 +223,19 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
             panel = self.hub_panels.get(hub_key)
             if panel:
                 panel.render_from_cache(client.order_cache)
+                self._ensure_region_history(panel.region_id)
+
+    def _ensure_region_history(self, region_id: int):
+        """Trigger a one-shot full-region history fetch on first activation.
+
+        Without this, history_cache only contains items the scanner picked
+        up as deal candidates, leaving the 7d/Day column blank for the
+        majority of profiled items.
+        """
+        if region_id in self._history_fetched_regions:
+            return
+        self._history_fetched_regions.add(region_id)
+        self.fetch_history_for_region(region_id)
 
     # =========================================================================
     # Status Updates

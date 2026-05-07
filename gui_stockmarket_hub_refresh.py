@@ -136,7 +136,23 @@ class HubPanelRefreshMixin:
                     [p.type_id for _, p, _ in classified]
                 )
 
+                from scanner_common import parse_history_stats
+                client = self.get_client() if self.get_client else None
+                region_cache = (
+                    client.history_cache.get(self.region_id, {}) if client else {}
+                )
+
                 for trend, profile, trend_tag in classified:
+                    history = region_cache.get(profile.type_id, [])
+                    trend_pct = None
+                    if history and len(history) >= 7:
+                        stats = parse_history_stats(history)
+                        if stats.avg_price_7d > 0 and stats.avg_price_30d > 0:
+                            trend_pct = (
+                                (stats.avg_price_7d - stats.avg_price_30d)
+                                / stats.avg_price_30d
+                            ) * 100
+
                     risk_data[trend].append(
                         {
                             "type_id": profile.type_id,
@@ -145,6 +161,7 @@ class HubPanelRefreshMixin:
                             "profile": profile,
                             "current_price": self.live_prices.get(profile.type_id, 0),
                             "trend_tag": trend_tag,
+                            "trend_pct": trend_pct,
                         }
                     )
 
