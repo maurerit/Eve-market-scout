@@ -603,7 +603,6 @@ class RiskCategoryPanel:
             type_name = item["type_name"]
             current_price = item["current_price"]
             trend_tag = item["trend_tag"]
-            trend_pct = item.get("trend_pct")
             
             # Determine signal and profit
             sig = ""
@@ -646,7 +645,7 @@ class RiskCategoryPanel:
                 format_isk(profile.hist_min) if profile.hist_min > 0 else "--",
                 format_isk(profile.hist_max) if profile.hist_max > 0 else "--",
                 format_isk(profile.avg_daily_volume) if profile.avg_daily_volume > 0 else "--",
-                f"{trend_pct:+.1f}%" if trend_pct is not None else "--",
+                "--",  # 7d_day - skip trend calculation for async path
             )
             
             self.tree.insert(
