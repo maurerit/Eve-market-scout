@@ -99,6 +99,7 @@ def run_material_filter_compute(
     from material_analysis import prebuild_material_floor_cache
     from sde_industry import get_sde_industry_db
     from market_history import get_market_history_db
+    import material_risk_storage
 
     print(f"[ColdStart-{hub_key}] === Material Filter === "
           f"(region {region_id})")
@@ -160,6 +161,7 @@ def run_material_filter_compute(
 
     analyzed = 0
     promoted = 0
+    pending_saves = []
     for idx, profile in enumerate(stable_profiles, start=1):
         result = check_material_risk(
             profile.type_id,
@@ -169,13 +171,20 @@ def run_material_filter_compute(
             item_floor_recent_cache=item_recent_floors,
             item_floor_baseline_cache=item_baseline_floors,
             hub_key=hub_key,
+            persist=False,
         )
         analyzed += 1
         if result == "medium":
             promoted += 1
+        pending_saves.append((profile.type_id, region_id, result))
 
         if progress_cb and (idx % 10 == 0 or idx == total):
             progress_cb(idx, total, f"Analyzing {idx}/{total}")
+
+    if pending_saves:
+        if progress_cb:
+            progress_cb(total, total, f"Saving {len(pending_saves)} results")
+        material_risk_storage.save_batch(pending_saves)
 
     get_material_filter_tracker().mark_complete(hub_key)
     print(f"[ColdStart-{hub_key}] Material filter: "

@@ -95,6 +95,37 @@ def save_entry(type_id: int, region_id: int, classification: str) -> None:
               f"(type={type_id}, region={region_id}): {e}")
 
 
+def save_batch(entries) -> int:
+    """Save many (type_id, region_id, classification) tuples in one
+    transaction. Returns count saved.
+
+    Mirrors leading_indicators_storage.save_batch — one connection,
+    one BEGIN/COMMIT, executemany. Avoids per-row connection-open and
+    per-row commit overhead, which is significant on Windows WAL.
+    """
+    today = date.today().strftime("%Y-%m-%d")
+    if not entries:
+        return 0
+    rows = [(type_id, region_id, classification, today)
+            for (type_id, region_id, classification) in entries]
+    try:
+        conn = _connect()
+        try:
+            with conn:
+                conn.executemany("""
+                    INSERT OR REPLACE INTO material_risk_cache
+                        (type_id, region_id, classification, computed_date)
+                    VALUES (?, ?, ?, ?)
+                """, rows)
+        finally:
+            conn.close()
+        print(f"[MaterialRiskStorage] Saved {len(rows)} entries for {today}")
+        return len(rows)
+    except Exception as e:
+        print(f"[MaterialRiskStorage] save_batch error: {e}")
+        return 0
+
+
 def has_today_data(region_id: int) -> bool:
     """Return True if any cached rows exist for region with today's date."""
     today = date.today().strftime("%Y-%m-%d")

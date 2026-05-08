@@ -242,6 +242,7 @@ def check_material_risk(
     item_floor_recent_cache: Optional[Dict[int, float]] = None,
     item_floor_baseline_cache: Optional[Dict[int, float]] = None,
     hub_key: Optional[str] = None,
+    persist: bool = True,
 ) -> str:
     """Check material correlation for risk adjustment.
     
@@ -281,7 +282,8 @@ def check_material_risk(
             print(f"{tag} Industry data not available, skipping check for {type_id}")
             result = 'skip'
             _material_risk_cache[cache_key] = result
-            material_risk_storage.save_entry(type_id, region_id, result)
+            if persist:
+                material_risk_storage.save_entry(type_id, region_id, result)
             return result
         
         # Run analysis (passes pre-computed floor caches when provided)
@@ -308,9 +310,10 @@ def check_material_risk(
             result = 'skip'
         
         _material_risk_cache[cache_key] = result
-        material_risk_storage.save_entry(type_id, region_id, result)
+        if persist:
+            material_risk_storage.save_entry(type_id, region_id, result)
         return result
-            
+
     except ImportError as e:
         print(f"{tag} Module not available: {e}")
         return 'skip'
