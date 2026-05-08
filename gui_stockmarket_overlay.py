@@ -100,30 +100,35 @@ class StockMarketOverlayMixin:
             status = get_background_import_status()
 
             # Check if profiles exist - if so, Stock Market is usable
-            # even if restart is still needed (for scanner DB merge)
+            # even if restart is still needed (for scanner DB merge).
+            # Keep polling at a slow rate so we still pick up
+            # orchestrator phase transitions (e.g. user deleting
+            # profiles between phases).
             if self._has_profiles():
                 self._hide_overlay()
+                self._lock_poll_job = self.frame.after(2000, self._poll_lock_state)
                 return
-            
+
             # Check if restart required (import complete, waiting for swap)
             if status.get('restart_required', False):
                 self._show_restart_overlay()
                 self._lock_poll_job = self.frame.after(10000, self._poll_lock_state)
                 return
-            
+
             # Check if background import is running
             if status.get('running', False):
                 self._show_progress_overlay(status)
                 self._lock_poll_job = self.frame.after(1000, self._poll_lock_state)
                 return
-            
+
             # Check if we have full history
             from market_history import get_market_history_db
             from gui_migration import check_has_full_history
-            
+
             db = get_market_history_db()
             if check_has_full_history(db):
                 self._hide_overlay()
+                self._lock_poll_job = self.frame.after(2000, self._poll_lock_state)
                 return
             
             # No full history and not importing - show waiting message

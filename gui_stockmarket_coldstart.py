@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from config import TRADE_HUBS
+from tk_queue import submit
 
 
 @dataclass
@@ -97,8 +98,11 @@ class StockMarketColdStartMixin:
             print("[ColdStart] === Worker thread started ===")
             detected = self._cold_start_phase0_detect()
             self._cold_start_log_detected(detected)
-            print("[ColdStart] === Phase 0 complete (later phases not yet implemented) ===")
-            # Phases 1-7 will be added in subsequent steps.
+
+            self._cold_start_phase3_profiles(detected)
+
+            # Phases 1, 2, 4, 5, 6 will be added in subsequent steps.
+            print("[ColdStart] === Cold start complete ===")
             self.phase_state.done = True
         except Exception as e:
             import traceback
@@ -181,6 +185,100 @@ class StockMarketColdStartMixin:
             print(f"[ColdStart] tracker detection failed: {e}")
 
         return state
+
+    # =========================================================================
+    # Phase 3 — sequential profile build for all 5 regions
+    # =========================================================================
+
+    def _cold_start_phase3_profiles(self, detected: DetectedState):
+        """Build profiles for any region that has DB history but no profiles.
+
+        Sync work — uses ProfileManager.extract_all_from_db on the worker
+        thread.  Updates phase_state so the locked overlay reflects
+        progress: title shows current hub, progress bar shows item
+        extraction within that region, detail shows region X of N.
+        """
+        regions_to_build = []
+        for hub_key, config in TRADE_HUBS.items():
+            if not config.get("enabled", True):
+                continue
+            region_id = config["region_id"]
+            existing = detected.profiles_per_region.get(region_id, 0)
+            if existing > 0:
+                print(f"[ColdStart] phase 3: skipping {hub_key} "
+                      f"(already has {existing:,} profiles)")
+                continue
+            db_items = detected.db_items_per_region.get(region_id, 0)
+            if db_items == 0:
+                print(f"[ColdStart] phase 3: skipping {hub_key} "
+                      f"(no DB history for region)")
+                continue
+            regions_to_build.append((hub_key, region_id, config["name"]))
+
+        if not regions_to_build:
+            print("[ColdStart] phase 3: nothing to build, skipping")
+            return
+
+        print(f"[ColdStart] === Phase 3: building profiles for "
+              f"{len(regions_to_build)} regions ===")
+
+        from market_history import get_market_history_db
+        db = get_market_history_db()
+
+        total_regions = len(regions_to_build)
+        for region_idx, (hub_key, region_id, hub_name) in enumerate(
+            regions_to_build, start=1
+        ):
+            print(f"[ColdStart] phase 3 [{region_idx}/{total_regions}]: "
+                  f"{hub_name} (region {region_id})")
+
+            self.phase_state.current_phase = 3
+            self.phase_state.phase_name = f"Building profiles for {hub_name}"
+            self.phase_state.current = 0
+            self.phase_state.total = 0
+            self.phase_state.detail = f"region {region_idx} of {total_regions}"
+
+            def progress_cb(
+                msg: str, current: int, total: int,
+                _ridx=region_idx, _rtot=total_regions,
+            ):
+                # Throttle phase_state writes — extract_all_from_db calls
+                # this on every item.  200 matches the existing
+                # _build_profiles_for_hub cadence.
+                if current % 200 == 0 or current == total:
+                    self.phase_state.current = current
+                    self.phase_state.total = total
+                    self.phase_state.detail = (
+                        f"region {_ridx} of {_rtot} — {msg}"
+                    )
+
+            try:
+                success, failed = self.profiles.extract_all_from_db(
+                    region_id=region_id,
+                    market_db=db,
+                    progress_callback=progress_cb,
+                )
+                print(f"[ColdStart] phase 3: {hub_name} done — "
+                      f"{success:,} ok, {failed} failed")
+
+                # Trigger a panel refresh on the main thread so the
+                # newly-built profiles render without waiting for the
+                # MF/LI 24h trackers to expire.  Mirrors what
+                # _on_profiles_built does after _build_profiles_for_hub.
+                if success > 0:
+                    panel = self.hub_panels.get(hub_key)
+                    if panel:
+                        submit(lambda p=panel: p.refresh_display_async())
+            except Exception as e:
+                print(f"[ColdStart] phase 3: {hub_name} failed: {e}")
+                # Continue with remaining regions instead of bailing the
+                # whole orchestrator — partial success is better than none.
+
+        print("[ColdStart] === Phase 3 complete ===")
+
+    # =========================================================================
+    # Logging helpers
+    # =========================================================================
 
     def _cold_start_log_detected(self, s: DetectedState):
         """Pretty-print detected state for visibility during scaffold phase."""
