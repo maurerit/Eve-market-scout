@@ -288,8 +288,9 @@ class MarketHistoryImportMixin:
         # Speed optimizations (DANGEROUS - no crash recovery)
         cursor.execute("PRAGMA synchronous = OFF")
         cursor.execute("PRAGMA journal_mode = MEMORY")
-        cursor.execute("PRAGMA cache_size = -500000")  # 500MB cache
+        cursor.execute("PRAGMA cache_size = -1048576")  # 1GB cache
         cursor.execute("PRAGMA temp_store = MEMORY")
+        cursor.execute("PRAGMA mmap_size = 268435456")  # 256MB mmap hint
         
         # Ensure table exists
         cursor.execute("""

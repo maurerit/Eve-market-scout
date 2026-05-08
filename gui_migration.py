@@ -79,12 +79,96 @@ def count_archive_files() -> int:
     """Count total files in archive for progress estimation."""
     archive_path = get_archive_path()
     count = 0
-    
+
     for year_dir in archive_path.iterdir():
         if year_dir.is_dir() and year_dir.name.isdigit():
             count += len(list(year_dir.glob("market-history-*")))
-    
+
     return count
+
+
+def get_archive_date_range() -> tuple:
+    """Get (earliest_date, latest_date) present in the archive.
+
+    Returns (None, None) if archive is empty or missing.
+    """
+    archive_path = get_archive_path()
+    if not archive_path.exists():
+        return (None, None)
+
+    earliest = None
+    latest = None
+
+    for year_dir in archive_path.iterdir():
+        if not (year_dir.is_dir() and year_dir.name.isdigit()):
+            continue
+        for f in year_dir.glob("market-history-*"):
+            stem = f.name
+            if stem.endswith('.bz2'):
+                stem = stem[:-4]
+            if stem.endswith('.csv'):
+                stem = stem[:-4]
+            date_str = stem.replace('market-history-', '')
+            try:
+                d = date.fromisoformat(date_str)
+            except ValueError:
+                continue
+            if earliest is None or d < earliest:
+                earliest = d
+            if latest is None or d > latest:
+                latest = d
+
+    return (earliest, latest)
+
+
+def archive_has_full_history(years: int = 3) -> bool:
+    """True iff local archive covers `years` of recent data with no
+    further network download needed.
+
+    Requires both:
+      - latest date is within EVEREF_LAG_DAYS+5 of today (recent enough)
+      - earliest date is at or before today - years*365 (deep enough)
+    """
+    earliest, latest = get_archive_date_range()
+    if not earliest or not latest:
+        return False
+
+    today = date.today()
+    if latest < today - timedelta(days=EVEREF_LAG_DAYS + 5):
+        return False
+    if earliest > today - timedelta(days=years * 365):
+        return False
+    return True
+
+
+def archive_has_scanner_minimum(min_days: int = SCANNER_MIN_DAYS) -> bool:
+    """True iff local archive covers the scanner's recent-day window."""
+    _, latest = get_archive_date_range()
+    if not latest:
+        return False
+
+    today = date.today()
+    if latest < today - timedelta(days=EVEREF_LAG_DAYS + 5):
+        return False
+
+    # Count actual files inside the recent window, not just date span
+    archive_path = get_archive_path()
+    available_date = today - timedelta(days=EVEREF_LAG_DAYS)
+    start_date = available_date - timedelta(days=min_days - 1)
+
+    days_present = 0
+    check_date = start_date
+    while check_date <= available_date:
+        date_str = check_date.strftime('%Y-%m-%d')
+        year_dir = archive_path / str(check_date.year)
+        csv_path = year_dir / f"market-history-{date_str}.csv"
+        bz2_path = year_dir / f"market-history-{date_str}.csv.bz2"
+        if csv_path.exists() or bz2_path.exists():
+            days_present += 1
+        check_date += timedelta(days=1)
+
+    # Allow small gaps but require near-full coverage
+    return days_present >= min_days - 2
 
 
 def check_has_recent_data(db: MarketHistoryDB, min_days: int = SCANNER_MIN_DAYS) -> bool:
@@ -692,12 +776,23 @@ def run_migration_if_needed(parent: tk.Tk, db: MarketHistoryDB) -> bool:
     
     print("[Debug] run_migration_if_needed: calling init_db")
     db.init_db()
-    
+
     has_archive = check_archive_exists()
     print(f"[Debug] run_migration_if_needed: has_archive={has_archive}")
-    
+
+    # Branch B: archive on disk already covers full 3-year window.
+    # No choice for the user to make — both dialog options would just
+    # import locally. Skip the prompt and run full migration directly.
+    if has_archive and archive_has_full_history():
+        print("[Migration] Local archive covers full 3-year history - "
+              "skipping FirstLaunchDialog, running full migration")
+        migration_dialog = MigrationDialog(parent, db)
+        migration_dialog.start_import()
+        _run_dialog_loop(parent, migration_dialog)
+        return migration_dialog.result
+
     print("[Debug] run_migration_if_needed: showing FirstLaunchDialog")
-    
+
     # FirstLaunchDialog is a Toplevel using the single app root
     dialog = FirstLaunchDialog(parent)
     
