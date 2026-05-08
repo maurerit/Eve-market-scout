@@ -553,25 +553,43 @@ class HoldingsPanel:
             return "skip"
     
     def _calculate_trend(self, type_id: int) -> float | None:
-        """Calculate 7d vs 30d price trend percentage."""
-        if not self.get_client:
+        """Calculate 7d vs 30d price trend percentage.
+
+        Merges everef SQLite history (covers all profiled items, lags
+        1-4 days) with ESI history_cache (fresh, but only scanner
+        candidates). SQLite gives coverage; ESI fills the recency gap.
+        Mirrors the merge in gui_stockmarket_hub_refresh.py used by the
+        risk panels.
+        """
+        from market_history import get_market_history_db
+        market_db = get_market_history_db()
+        sqlite_records = market_db.get_history_bulk(
+            self.region_id, [type_id], days=30
+        ).get(type_id, [])
+
+        esi_records = []
+        if self.get_client:
+            client = self.get_client()
+            if client:
+                esi_records = client.history_cache.get(
+                    self.region_id, {}
+                ).get(type_id, [])
+
+        if sqlite_records and esi_records:
+            sqlite_dates = {r.get("date") for r in sqlite_records}
+            merged = sqlite_records + [
+                r for r in esi_records if r.get("date") not in sqlite_dates
+            ]
+        else:
+            merged = sqlite_records or esi_records
+
+        if not merged or len(merged) < 7:
             return None
-        
-        client = self.get_client()
-        if not client:
-            return None
-        
-        region_cache = client.history_cache.get(self.region_id, {})
-        history = region_cache.get(type_id, [])
-        
-        if not history or len(history) < 7:
-            return None
-        
-        stats = parse_history_stats(history)
-        
+
+        stats = parse_history_stats(merged)
         if stats.avg_price_7d <= 0 or stats.avg_price_30d <= 0:
             return None
-        
+
         return ((stats.avg_price_7d - stats.avg_price_30d) / stats.avg_price_30d) * 100
     
     def _sort_holdings(self, items: List[dict]) -> List[dict]:
