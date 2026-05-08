@@ -62,6 +62,7 @@ class DetectedState:
     stale_hubs: list = field(default_factory=list)               # [(hub_key, region_id, name)]
     mf_pending_hubs: list = field(default_factory=list)          # [hub_key]
     li_pending_hubs: list = field(default_factory=list)          # [hub_key]
+    sde_industry_available: bool = True                          # blueprint DB present?
 
 
 class StockMarketColdStartMixin:
@@ -99,9 +100,14 @@ class StockMarketColdStartMixin:
             detected = self._cold_start_phase0_detect()
             self._cold_start_log_detected(detected)
 
+            self._cold_start_phase0_sde_industry(detected)
+            self._cold_start_phase12_bg_import_observer(detected)
             self._cold_start_phase3_profiles(detected)
+            self._cold_start_phase4_esi_burst(detected)
+            self._cold_start_phase5_material_filter(detected)
+            self._cold_start_phase6_leading_indicators(detected)
+            self._cold_start_phase7_unlock(detected)
 
-            # Phases 1, 2, 4, 5, 6 will be added in subsequent steps.
             print("[ColdStart] === Cold start complete ===")
             self.phase_state.done = True
         except Exception as e:
@@ -168,6 +174,14 @@ class StockMarketColdStartMixin:
         except Exception as e:
             print(f"[ColdStart] stale-hub detection failed: {e}")
 
+        # --- SDE industry DB (blueprint material data, used by phase 5) ---
+        try:
+            from sde_industry import get_sde_industry_db
+            state.sde_industry_available = get_sde_industry_db().is_available()
+        except Exception as e:
+            print(f"[ColdStart] sde_industry detection failed: {e}")
+            state.sde_industry_available = False
+
         # --- MF / LI 24h trackers ---
         try:
             from stockmarket_filters import MaterialFilterTracker
@@ -185,6 +199,105 @@ class StockMarketColdStartMixin:
             print(f"[ColdStart] tracker detection failed: {e}")
 
         return state
+
+    # =========================================================================
+    # Phase 0 — SDE industry DB download if missing
+    # =========================================================================
+
+    def _cold_start_phase0_sde_industry(self, detected: DetectedState):
+        """Download the SDE industry blueprint DB if missing.
+
+        Phase 5 (material filter) reads this DB to look up blueprint
+        materials per item.  Without it, every per-item check fails the
+        is_available() guard and MF silently no-ops — masking results
+        and flooding the log with "Industry data not available" lines.
+
+        Treated as part of phase-0 preparation: current_phase stays 0
+        so the locked overlay shows the title without a numbered tag.
+        """
+        if detected.sde_industry_available:
+            return
+
+        print("[ColdStart] === Phase 0: SDE industry DB missing — downloading ===")
+
+        self.phase_state.current_phase = 0
+        self.phase_state.phase_name = "Downloading SDE industry data"
+        self.phase_state.current = 0
+        self.phase_state.total = 100
+        self.phase_state.detail = ""
+
+        from sde_industry import get_sde_industry_db
+        industry_db = get_sde_industry_db()
+
+        def progress_cb(msg: str, pct: int):
+            self.phase_state.current = pct
+            self.phase_state.total = 100
+            self.phase_state.detail = msg
+
+        try:
+            ok = industry_db.refresh(progress_callback=progress_cb)
+            if ok:
+                print("[ColdStart] SDE industry download complete")
+                detected.sde_industry_available = True
+            else:
+                print("[ColdStart] SDE industry download returned False — "
+                      "phase 5 will skip blueprint checks")
+        except Exception as e:
+            print(f"[ColdStart] SDE industry download error: {e}")
+
+    # =========================================================================
+    # Phases 1+2 — observe background_import (archive download + DB import)
+    # =========================================================================
+
+    def _cold_start_phase12_bg_import_observer(self, detected: DetectedState):
+        """Surface background_import progress via phase_state.
+
+        The migration system (gui_migration.py) is responsible for
+        kicking off background_import — the orchestrator only observes.
+        When bg-import isn't running this phase exits immediately.
+
+        While bg-import runs, this method blocks the worker thread,
+        polling its status once a second and translating the status
+        message into phase 1 (download) or phase 2 (import) so the
+        locked overlay shows meaningful progress.
+        """
+        from background_import import get_background_import_status
+        import time
+
+        status = get_background_import_status()
+        if not status.get("running"):
+            return
+
+        print("[ColdStart] === Phases 1+2: observing background import ===")
+
+        while True:
+            status = get_background_import_status()
+            if not status.get("running"):
+                break
+
+            msg = status.get("status", "")
+            msg_lower = msg.lower()
+            if "download" in msg_lower:
+                self.phase_state.current_phase = 1
+                self.phase_state.phase_name = (
+                    "Downloading market history archive"
+                )
+            elif "import" in msg_lower:
+                self.phase_state.current_phase = 2
+                self.phase_state.phase_name = (
+                    "Importing market history to database"
+                )
+            else:
+                self.phase_state.current_phase = 1
+                self.phase_state.phase_name = "Preparing market history"
+
+            self.phase_state.current = status.get("current", 0)
+            self.phase_state.total = status.get("total", 0)
+            self.phase_state.detail = msg
+
+            time.sleep(1)
+
+        print("[ColdStart] === Phases 1+2 complete (bg-import finished) ===")
 
     # =========================================================================
     # Phase 3 — sequential profile build for all 5 regions
@@ -282,6 +395,217 @@ class StockMarketColdStartMixin:
         print("[ColdStart] === Phase 3 complete ===")
 
     # =========================================================================
+    # Phase 4 — ESI burst on the worker thread's asyncio loop
+    # =========================================================================
+
+    def _cold_start_phase4_esi_burst(self, detected: DetectedState):
+        """Pull orders for stale hubs from ESI on the worker thread.
+
+        Uses a fresh asyncio loop bound to the worker thread; combined
+        with step 1's per-loop semaphore in api.ESIClient, this can run
+        concurrently with the scanner's own loop without cross-loop
+        races.
+
+        Skips entirely when no hubs are stale (cache age < 24h).
+        """
+        if not detected.stale_hubs:
+            print("[ColdStart] phase 4: no stale hubs, skipping")
+            return
+
+        client = self.get_client() if self.get_client else None
+        if client is None:
+            print("[ColdStart] phase 4: no ESI client, skipping")
+            return
+
+        # User priority: Jita first, then the rest in their natural order.
+        stale = sorted(
+            detected.stale_hubs,
+            key=lambda t: 0 if t[0] == "jita" else 1,
+        )
+        total_hubs = len(stale)
+
+        print(f"[ColdStart] === Phase 4: pulling orders for "
+              f"{total_hubs} stale hubs ===")
+
+        import asyncio
+        from stockmarket_filters import get_hub_burst_tracker
+
+        self.phase_state.current_phase = 4
+        self.phase_state.phase_name = "Pulling fresh hub orders from ESI"
+        self.phase_state.current = 0
+        self.phase_state.total = total_hubs
+        self.phase_state.detail = ""
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            tracker = get_hub_burst_tracker()
+
+            async def pull_all():
+                client.ensure_session()
+                client.reset_for_new_loop()
+                for idx, (hub_key, region_id, hub_name) in enumerate(
+                    stale, start=1
+                ):
+                    self.phase_state.phase_name = (
+                        f"Pulling orders for {hub_name}"
+                    )
+                    self.phase_state.detail = (
+                        f"hub {idx} of {total_hubs}"
+                    )
+                    print(f"[ColdStart] phase 4 [{idx}/{total_hubs}]: "
+                          f"{hub_name} (region {region_id})")
+                    try:
+                        await client.get_market_orders(region_id)
+                        tracker.mark_complete(hub_key)
+                        print(f"[ColdStart] phase 4: {hub_name} done")
+                    except Exception as e:
+                        print(f"[ColdStart] phase 4: {hub_name} failed: {e}")
+                    self.phase_state.current = idx
+
+            loop.run_until_complete(pull_all())
+        finally:
+            loop.close()
+
+        print("[ColdStart] === Phase 4 complete ===")
+
+    # =========================================================================
+    # Phase 5 — material filter compute, all hubs (Jita first)
+    # =========================================================================
+
+    def _cold_start_phase5_material_filter(self, detected: DetectedState):
+        """Run material filter compute for every hub whose 24h tracker
+        says it's due.  Sequential, Jita first.
+        """
+        from gui_stockmarket_compute import run_material_filter_compute
+
+        hubs_to_run = [h for h in detected.mf_pending_hubs]
+        if not hubs_to_run:
+            print("[ColdStart] phase 5: nothing pending, skipping")
+            return
+
+        hubs_to_run.sort(key=lambda h: 0 if h == "jita" else 1)
+        total = len(hubs_to_run)
+
+        print(f"[ColdStart] === Phase 5: material filter for {total} hubs ===")
+
+        for idx, hub_key in enumerate(hubs_to_run, start=1):
+            config = TRADE_HUBS.get(hub_key, {})
+            region_id = config.get("region_id")
+            hub_name = config.get("name", hub_key)
+            if region_id is None:
+                continue
+
+            self.phase_state.current_phase = 5
+            self.phase_state.phase_name = f"Material filter for {hub_name}"
+            self.phase_state.current = 0
+            self.phase_state.total = 0
+            self.phase_state.detail = f"hub {idx} of {total}"
+
+            def progress_cb(
+                current: int, total: int, detail: str,
+                _idx=idx, _tot=total,
+            ):
+                self.phase_state.current = current
+                self.phase_state.total = total
+                self.phase_state.detail = (
+                    f"hub {_idx} of {_tot} — {detail}" if detail
+                    else f"hub {_idx} of {_tot}"
+                )
+
+            try:
+                run_material_filter_compute(
+                    hub_key, region_id, self.profiles,
+                    progress_cb=progress_cb,
+                )
+            except Exception as e:
+                print(f"[ColdStart] phase 5: {hub_name} failed: {e}")
+
+        print("[ColdStart] === Phase 5 complete ===")
+
+    # =========================================================================
+    # Phase 6 — leading indicators compute, all hubs (Jita first)
+    # =========================================================================
+
+    def _cold_start_phase6_leading_indicators(self, detected: DetectedState):
+        """Run leading indicators compute for every hub whose 24h tracker
+        says it's due.  Sequential, Jita first.
+        """
+        from gui_stockmarket_compute import run_leading_indicators_compute
+
+        hubs_to_run = [h for h in detected.li_pending_hubs]
+        if not hubs_to_run:
+            print("[ColdStart] phase 6: nothing pending, skipping")
+            return
+
+        hubs_to_run.sort(key=lambda h: 0 if h == "jita" else 1)
+        total = len(hubs_to_run)
+
+        print(f"[ColdStart] === Phase 6: leading indicators for {total} hubs ===")
+
+        for idx, hub_key in enumerate(hubs_to_run, start=1):
+            config = TRADE_HUBS.get(hub_key, {})
+            region_id = config.get("region_id")
+            hub_name = config.get("name", hub_key)
+            if region_id is None:
+                continue
+
+            self.phase_state.current_phase = 6
+            self.phase_state.phase_name = f"Leading indicators for {hub_name}"
+            self.phase_state.current = 0
+            self.phase_state.total = 0
+            self.phase_state.detail = f"hub {idx} of {total}"
+
+            def progress_cb(
+                current: int, total: int, detail: str,
+                _idx=idx, _tot=total,
+            ):
+                self.phase_state.current = current
+                self.phase_state.total = total
+                self.phase_state.detail = (
+                    f"hub {_idx} of {_tot} — {detail}" if detail
+                    else f"hub {_idx} of {_tot}"
+                )
+
+            try:
+                run_leading_indicators_compute(
+                    hub_key, region_id, self.profiles,
+                    progress_cb=progress_cb,
+                )
+            except Exception as e:
+                print(f"[ColdStart] phase 6: {hub_name} failed: {e}")
+
+        print("[ColdStart] === Phase 6 complete ===")
+
+    # =========================================================================
+    # Phase 7 — unlock: refresh all panels so the new MF/LI results render
+    # =========================================================================
+
+    def _cold_start_phase7_unlock(self, detected: DetectedState):
+        """Submit panel refreshes for every enabled hub on the main thread.
+
+        Phase 3 already triggered a refresh for any hub it built profiles
+        for, but those refreshes ran before phases 5+6 and don't reflect
+        MF risk or LI columns.  A second refresh here picks up the latest
+        compute results.  Hubs with no profiles still get refreshed (a
+        no-op render) so the panel is at least in a known state.
+        """
+        self.phase_state.current_phase = 7
+        self.phase_state.phase_name = "Refreshing displays"
+        self.phase_state.current = 0
+        self.phase_state.total = 0
+        self.phase_state.detail = ""
+
+        for hub_key, config in TRADE_HUBS.items():
+            if not config.get("enabled", True):
+                continue
+            panel = self.hub_panels.get(hub_key)
+            if panel:
+                submit(lambda p=panel: p.refresh_display_async())
+
+        print("[ColdStart] === Phase 7 complete (panel refreshes submitted) ===")
+
+    # =========================================================================
     # Logging helpers
     # =========================================================================
 
@@ -305,4 +629,5 @@ class StockMarketColdStartMixin:
             print("[ColdStart]   stale hubs: none (all caches fresh)")
         print(f"[ColdStart]   MF pending: {s.mf_pending_hubs or 'none'}")
         print(f"[ColdStart]   LI pending: {s.li_pending_hubs or 'none'}")
+        print(f"[ColdStart]   SDE industry available: {s.sde_industry_available}")
         print("[ColdStart] -----------------------")

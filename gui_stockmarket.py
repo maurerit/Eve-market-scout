@@ -72,12 +72,13 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         self.frame.after(50, self._restore_active_tab)
         # Defer status update to avoid blocking startup with slow DB queries
         self.frame.after(100, self._update_archive_status_safe)
-        # Defer initial data load + material filter to background thread
-        self.frame.after(500, self._startup_refresh)
-        # Cold-start orchestrator runs alongside _startup_refresh during
-        # scaffold phase — currently logs detected state only, takes no
-        # action.  Will replace _startup_refresh once all phases land.
-        self.frame.after(600, self._start_cold_start_worker)
+        # Cold-start orchestrator now owns the entire startup flow
+        # (ESI burst + MF + LI + panel refresh).  The legacy
+        # _startup_refresh path stays in the file as a quick rollback
+        # — re-enable it by un-commenting the after() call below if
+        # the orchestrator regresses.
+        # self.frame.after(500, self._startup_refresh)
+        self.frame.after(500, self._start_cold_start_worker)
         
         # Register callback so background import can trigger refresh
         # + material filter after profile building completes
