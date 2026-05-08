@@ -448,16 +448,21 @@ class RiskCategoryPanel:
     
     def refresh_display(self, run_material_filter: bool = False):
         """Refresh the display with filtered items.
-        
+
         Args:
             run_material_filter: Legacy parameter, unused. Material filter
                                  results are read from the session cache
                                  (populated by HubPanel.apply_material_filter).
         """
+        # Bump generation so any in-flight chunked insert from a prior
+        # refresh aborts before writing into the freshly-cleared tree.
+        self._populate_gen = getattr(self, "_populate_gen", 0) + 1
+        gen = self._populate_gen
+
         # Clear existing
         for item in self.tree.get_children():
             self.tree.delete(item)
-        
+
         # Load leading indicators cache for this region (one query)
         try:
             import leading_indicators_storage
@@ -468,18 +473,18 @@ class RiskCategoryPanel:
             print(f"[RiskPanel-{self.risk_level}] LI cache load error: {e}")
             li_cache = {}
         self._li_cache_for_trend = li_cache
-        
+
         # Get all profiles for this region
         all_profiles = self.profiles.get_all_profiles()
         region_profiles = [p for p in all_profiles if p.region_id == self.region_id]
-        
+
         # Filter by risk level
         items_to_show = []
-        
+
         for profile in region_profiles:
             yearly_stats = self.profiles.get_yearly_stats(profile.type_id, self.region_id)
             trend = self._get_trend(yearly_stats, profile)
-            
+
             if trend == self.risk_level:
                 current_price = self.live_prices.get(profile.type_id, 0)
                 trend_pct = self._calculate_trend(profile.type_id)
@@ -491,20 +496,21 @@ class RiskCategoryPanel:
                     "trend_pct": trend_pct,
                     "trend_tag": trend_tag,
                 })
-        
+
         # Get SDE for names
         from sde_manager import get_sde_manager
         sde = get_sde_manager()
-        
-        # Populate
+
+        # Build rows (insertion happens via _chunked_insert below)
+        rows = []
         for item in items_to_show:
             profile = item["profile"]
             current_price = item["current_price"]
             trend_pct = item["trend_pct"]
             trend_tag = item["trend_tag"]
-            
+
             type_name = sde.get_type_name(profile.type_id) or f"Type {profile.type_id}"
-            
+
             # Determine signal and profit separately
             sig = ""
             profit_str = "--"
@@ -523,13 +529,13 @@ class RiskCategoryPanel:
                     sig = "[B]"
                 elif current_price > profile.weighted_p_high:
                     sig = "[S]"
-            
+
             # Format trend
             if trend_pct is not None:
                 trend_str = f"{trend_pct:+.1f}%"
             else:
                 trend_str = "--"
-            
+
             # Leading indicator letter (worst flag wins, blank if no data)
             from gui_indicator_help import get_indicator_letter
             li_result = li_cache.get(profile.type_id)
@@ -537,7 +543,7 @@ class RiskCategoryPanel:
                 get_indicator_letter(li_result.flags)
                 if li_result else ""
             )
-            
+
             values = (
                 sig,
                 li_letter,
@@ -555,22 +561,17 @@ class RiskCategoryPanel:
                 format_isk(profile.avg_daily_volume) if profile.avg_daily_volume > 0 else "--",
                 trend_str,
             )
-            
-            self.tree.insert(
-                "",
-                tk.END,
-                iid=str(profile.type_id),
-                values=values,
-                tags=(trend_tag,)
-            )
-        
-        # Apply current sort after populating
-        if self.sort_manager.primary:
-            self.sort_manager.apply_sort(self.tree)
-            self.sort_manager.update_headers(self.tree, self.col_titles)
-        
-        # Update count
-        self.count_label.configure(text=f"{len(items_to_show)} items")
+            rows.append((str(profile.type_id), values, trend_tag))
+
+        # Update count up front so the user sees the total while rows stream in
+        self.count_label.configure(text=f"{len(rows)} items")
+
+        def _on_done():
+            if self.sort_manager.primary:
+                self.sort_manager.apply_sort(self.tree)
+                self.sort_manager.update_headers(self.tree, self.col_titles)
+
+        self._chunked_insert(rows, gen, _on_done)
     
     def update_filters(self, filters: "StockMarketFilters"):
         """Update filters reference."""
@@ -578,14 +579,19 @@ class RiskCategoryPanel:
     
     def refresh_from_data(self, items: list):
         """Refresh display from pre-computed data (no DB queries).
-        
+
         Args:
             items: List of dicts with keys: type_id, type_name, profile, current_price, trend_tag
         """
+        # Bump generation so any in-flight chunked insert from a prior
+        # refresh aborts before writing into the freshly-cleared tree.
+        self._populate_gen = getattr(self, "_populate_gen", 0) + 1
+        gen = self._populate_gen
+
         # Clear existing
         for item in self.tree.get_children():
             self.tree.delete(item)
-        
+
         # Load leading indicators cache for this region (one query)
         try:
             import leading_indicators_storage
@@ -596,8 +602,9 @@ class RiskCategoryPanel:
             print(f"[RiskPanel-{self.risk_level}] LI cache load error: {e}")
             li_cache = {}
         self._li_cache_for_trend = li_cache
-        
-        # Populate from pre-computed data
+
+        # Build rows (insertion happens via _chunked_insert below)
+        rows = []
         for item in items:
             profile = item["profile"]
             type_name = item["type_name"]
@@ -648,22 +655,45 @@ class RiskCategoryPanel:
                 format_isk(profile.avg_daily_volume) if profile.avg_daily_volume > 0 else "--",
                 f"{trend_pct:+.1f}%" if trend_pct is not None else "--",
             )
-            
+            rows.append((str(profile.type_id), values, trend_tag))
+
+        # Update count up front so the user sees the total while rows stream in
+        self.count_label.configure(text=f"{len(rows)} items")
+
+        def _on_done():
+            if self.sort_manager.primary:
+                self.sort_manager.apply_sort(self.tree)
+                self.sort_manager.update_headers(self.tree, self.col_titles)
+
+        self._chunked_insert(rows, gen, _on_done)
+
+    def _chunked_insert(self, rows, gen, on_done, idx=0, chunk_size=100):
+        """Insert tree rows in chunks, yielding the mainloop between chunks.
+
+        Avoids freezing tab clicks while a refresh populates hundreds of
+        items. A generation token is captured at the start of a populate;
+        if a newer refresh has bumped self._populate_gen, the in-flight
+        chunks abort so they don't write into the cleared tree.
+        """
+        if gen != getattr(self, "_populate_gen", 0):
+            return
+        end = min(idx + chunk_size, len(rows))
+        for i in range(idx, end):
+            iid, values, trend_tag = rows[i]
             self.tree.insert(
                 "",
                 tk.END,
-                iid=str(profile.type_id),
+                iid=iid,
                 values=values,
-                tags=(trend_tag,)
+                tags=(trend_tag,),
             )
-        
-        # Apply current sort
-        if self.sort_manager.primary:
-            self.sort_manager.apply_sort(self.tree)
-            self.sort_manager.update_headers(self.tree, self.col_titles)
-        
-        # Update count
-        self.count_label.configure(text=f"{len(items)} items")
+        if end < len(rows):
+            self.tree.after(
+                1,
+                lambda: self._chunked_insert(rows, gen, on_done, end, chunk_size),
+            )
+        else:
+            on_done()
 
     def update_prices_only(self):
         """Update only price-dependent columns without rebuilding the treeview.
