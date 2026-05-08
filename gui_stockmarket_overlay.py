@@ -73,10 +73,32 @@ class StockMarketOverlayMixin:
         self._lock_poll_job = None
     
     def _poll_lock_state(self):
-        """Poll background import status and update overlay."""
+        """Poll background import status and update overlay.
+
+        Cold-start orchestrator (StockMarketColdStartMixin) takes priority:
+        if it's mid-phase the overlay reflects phase_state.  When it's
+        in phase 0 (detection) or has finished, the legacy logic below
+        decides what to show.  Falls through cleanly during the scaffold
+        period when only phase 0 is implemented.
+        """
         try:
+            ps = getattr(self, "phase_state", None)
+            if ps is not None:
+                if ps.error:
+                    self._show_phase_error_overlay(ps.error)
+                    self._lock_poll_job = self.frame.after(
+                        5000, self._poll_lock_state
+                    )
+                    return
+                if ps.current_phase >= 1 and not ps.done:
+                    self._show_phase_progress_overlay(ps)
+                    self._lock_poll_job = self.frame.after(
+                        500, self._poll_lock_state
+                    )
+                    return
+
             status = get_background_import_status()
-            
+
             # Check if profiles exist - if so, Stock Market is usable
             # even if restart is still needed (for scanner DB merge)
             if self._has_profiles():
@@ -194,7 +216,81 @@ class StockMarketOverlayMixin:
         if self._is_locked:
             self._is_locked = False
             self.locked_overlay.place_forget()
-    
+
+    # =========================================================================
+    # Cold-start orchestrator overlays (phase_state driven)
+    # =========================================================================
+
+    _PHASE_TOTAL = 7  # phases 1..7; phase 0 (detect) doesn't show overlay
+
+    def _show_phase_progress_overlay(self, ps):
+        """Show overlay reflecting cold-start orchestrator phase_state."""
+        if not self._is_locked:
+            self._is_locked = True
+            self.locked_overlay.place(
+                in_=self.frame, relx=0, rely=0,
+                relwidth=1.0, relheight=1.0
+            )
+            self.locked_overlay.lift()
+
+        self.overlay_title.configure(text=ps.phase_name or "Preparing Stock Market Data")
+
+        if ps.total > 0:
+            try:
+                self.overlay_progress.stop()
+            except Exception:
+                pass
+            pct = (ps.current / ps.total) * 100
+            self.overlay_progress_var.set(pct)
+            self.overlay_progress.configure(mode="determinate", maximum=100)
+            counter = f"{ps.current:,}/{ps.total:,}"
+        else:
+            if str(self.overlay_progress.cget("mode")) != "indeterminate":
+                self.overlay_progress.configure(mode="indeterminate")
+                try:
+                    self.overlay_progress.start(80)
+                except Exception:
+                    pass
+            counter = ""
+
+        phase_tag = f"Phase {ps.current_phase} of {self._PHASE_TOTAL}"
+        if counter and ps.detail:
+            self.overlay_progress_text.configure(text=f"{phase_tag} — {counter} — {ps.detail}")
+        elif counter:
+            self.overlay_progress_text.configure(text=f"{phase_tag} — {counter}")
+        elif ps.detail:
+            self.overlay_progress_text.configure(text=f"{phase_tag} — {ps.detail}")
+        else:
+            self.overlay_progress_text.configure(text=phase_tag)
+
+        self.overlay_status.configure(text="")
+        self.overlay_progress.pack(pady=(0, 10))
+        self.overlay_progress_text.pack(pady=(0, 20))
+        self.overlay_restart_btn.pack_forget()
+
+    def _show_phase_error_overlay(self, error: str):
+        """Show overlay when cold-start orchestrator hits a fatal error."""
+        if not self._is_locked:
+            self._is_locked = True
+            self.locked_overlay.place(
+                in_=self.frame, relx=0, rely=0,
+                relwidth=1.0, relheight=1.0
+            )
+            self.locked_overlay.lift()
+
+        try:
+            self.overlay_progress.stop()
+        except Exception:
+            pass
+        self.overlay_title.configure(text="Stock Market Setup Failed")
+        self.overlay_status.configure(
+            text=f"Cold-start error:\n{error}\n\n"
+                 "Check the log for details and restart the app."
+        )
+        self.overlay_progress.pack_forget()
+        self.overlay_progress_text.pack_forget()
+        self.overlay_restart_btn.pack_forget()
+
     def _on_restart_prompt(self):
         """Handle restart button click."""
         result = messagebox.askokcancel(
