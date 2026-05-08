@@ -90,7 +90,11 @@ class StockMarketOverlayMixin:
                         5000, self._poll_lock_state
                     )
                     return
-                if ps.current_phase >= 1 and not ps.done:
+                if not ps.done:
+                    # Tab is locked whenever the orchestrator hasn't
+                    # signalled completion — including the brief phase 0
+                    # detection window before phase 3 (or future phases)
+                    # starts.  done=True is the only "ready" signal.
                     self._show_phase_progress_overlay(ps)
                     self._lock_poll_job = self.frame.after(
                         500, self._poll_lock_state
@@ -258,15 +262,15 @@ class StockMarketOverlayMixin:
                     pass
             counter = ""
 
-        phase_tag = f"Phase {ps.current_phase} of {self._PHASE_TOTAL}"
-        if counter and ps.detail:
-            self.overlay_progress_text.configure(text=f"{phase_tag} — {counter} — {ps.detail}")
-        elif counter:
-            self.overlay_progress_text.configure(text=f"{phase_tag} — {counter}")
-        elif ps.detail:
-            self.overlay_progress_text.configure(text=f"{phase_tag} — {ps.detail}")
+        # Phase 0 (detection) doesn't have a meaningful "phase X of N"
+        # number — it's the orchestrator inspecting state before any
+        # real work.  Suppress the phase tag in that case.
+        if ps.current_phase >= 1:
+            phase_tag = f"Phase {ps.current_phase} of {self._PHASE_TOTAL}"
         else:
-            self.overlay_progress_text.configure(text=phase_tag)
+            phase_tag = ""
+        bits = [b for b in (phase_tag, counter, ps.detail) if b]
+        self.overlay_progress_text.configure(text=" — ".join(bits))
 
         self.overlay_status.configure(text="")
         self.overlay_progress.pack(pady=(0, 10))

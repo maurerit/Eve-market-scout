@@ -219,6 +219,11 @@ class StockMarketColdStartMixin:
             print("[ColdStart] phase 3: nothing to build, skipping")
             return
 
+        # User-stated priority: Jita first, others in their natural
+        # TRADE_HUBS order after that.  Stable sort preserves the
+        # remaining order.
+        regions_to_build.sort(key=lambda t: 0 if t[0] == "jita" else 1)
+
         print(f"[ColdStart] === Phase 3: building profiles for "
               f"{len(regions_to_build)} regions ===")
 
