@@ -132,11 +132,45 @@ class HubPanelRefreshMixin:
                     classified.append((trend, profile, trend_tag))
 
                 # One bulk name fetch instead of N individual DB queries
-                name_map = sde.get_type_names_bulk(
-                    [p.type_id for _, p, _ in classified]
+                type_ids_classified = [p.type_id for _, p, _ in classified]
+                name_map = sde.get_type_names_bulk(type_ids_classified)
+
+                # 7d trend source: everef SQLite (covers all profiled items
+                # but lags 1-4 days) merged with ESI history_cache (fresh,
+                # but only populated for scanner candidates). ESI fills the
+                # recency gap; SQLite fills the coverage gap.
+                from market_history import get_market_history_db
+                from scanner_common import parse_history_stats
+                market_db = get_market_history_db()
+                sqlite_hist = market_db.get_history_bulk(
+                    self.region_id, type_ids_classified, days=30
+                )
+                client = self.get_client() if self.get_client else None
+                esi_cache = (
+                    client.history_cache.get(self.region_id, {}) if client else {}
                 )
 
                 for trend, profile, trend_tag in classified:
+                    sqlite_records = sqlite_hist.get(profile.type_id, [])
+                    esi_records = esi_cache.get(profile.type_id, [])
+                    if sqlite_records and esi_records:
+                        sqlite_dates = {r.get("date") for r in sqlite_records}
+                        merged = sqlite_records + [
+                            r for r in esi_records
+                            if r.get("date") not in sqlite_dates
+                        ]
+                    else:
+                        merged = sqlite_records or esi_records
+
+                    trend_pct = None
+                    if merged and len(merged) >= 7:
+                        stats = parse_history_stats(merged)
+                        if stats.avg_price_7d > 0 and stats.avg_price_30d > 0:
+                            trend_pct = (
+                                (stats.avg_price_7d - stats.avg_price_30d)
+                                / stats.avg_price_30d
+                            ) * 100
+
                     risk_data[trend].append(
                         {
                             "type_id": profile.type_id,
@@ -145,6 +179,7 @@ class HubPanelRefreshMixin:
                             "profile": profile,
                             "current_price": self.live_prices.get(profile.type_id, 0),
                             "trend_tag": trend_tag,
+                            "trend_pct": trend_pct,
                         }
                     )
 

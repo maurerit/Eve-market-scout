@@ -3,6 +3,7 @@
 import asyncio
 import aiohttp
 import re
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from config import (
@@ -24,8 +25,15 @@ class ESIClient(TypeNameMixin):
     """Async client for EVE ESI API."""
 
     def __init__(self):
-        self.semaphore: Optional[asyncio.Semaphore] = None
-        self.session: Optional[aiohttp.ClientSession] = None
+        # Per-event-loop async primitives. Each worker thread runs its own
+        # event loop and gets its own semaphore + session, so concurrent
+        # threads can't stomp each other (was the cause of "Semaphore is
+        # bound to a different event loop" cross-loop races on cold start).
+        # Entries for closed loops leak in this dict but the loops themselves
+        # are GC'd; cleanup is a TODO for later.
+        self._per_loop: dict[int, dict] = {}
+        self._per_loop_lock = threading.Lock()
+
         self.type_name_cache: dict[int, str] = {}
         self.system_cache: dict[int, dict] = {}
         self.valid_systems: set[int] = set()
@@ -56,18 +64,66 @@ class ESIClient(TypeNameMixin):
             self.jita_orders_cache = _jita_entry['orders']
             self.jita_orders_timestamp = _jita_entry.get('timestamp')
 
+    def _get_loop_state(self) -> dict:
+        """Return the {semaphore, session} dict for the current event loop.
+
+        Lazily creates the entry on first access from a given loop.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        key = id(loop)
+        with self._per_loop_lock:
+            state = self._per_loop.get(key)
+            if state is None:
+                state = {
+                    "semaphore": asyncio.Semaphore(MAX_CONCURRENT_REQUESTS),
+                    "session": None,
+                }
+                self._per_loop[key] = state
+        return state
+
+    @property
+    def semaphore(self) -> asyncio.Semaphore:
+        return self._get_loop_state()["semaphore"]
+
+    @semaphore.setter
+    def semaphore(self, value):
+        # Setter kept for backward compatibility. None is a no-op (legacy
+        # __init__ pattern); other values store into current loop's state.
+        if value is None:
+            return
+        self._get_loop_state()["semaphore"] = value
+
+    @property
+    def session(self) -> Optional[aiohttp.ClientSession]:
+        return self._get_loop_state().get("session")
+
+    @session.setter
+    def session(self, value):
+        self._get_loop_state()["session"] = value
+
     def reset_for_new_loop(self):
-        """Reset async primitives for a new event loop. Preserves caches."""
-        self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+        """No-op kept for backward compatibility.
+
+        Previously this overwrote a shared semaphore on every new loop,
+        which caused cross-loop races between worker threads. Semaphore
+        and session are now per-event-loop and created lazily, so callers
+        no longer need to reset anything when entering a new loop.
+        """
+        pass
 
     def ensure_session(self) -> aiohttp.ClientSession:
-        """Ensure a valid aiohttp session exists, creating one if needed."""
-        if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession(
+        """Ensure a valid aiohttp session exists for the current event loop."""
+        state = self._get_loop_state()
+        if state["session"] is None or state["session"].closed:
+            state["session"] = aiohttp.ClientSession(
                 connector=make_connector(),
                 timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
             )
-        return self.session
+        return state["session"]
 
     def clear_jita_cache(self):
         """Clear Jita orders cache to force refresh on next scan."""
