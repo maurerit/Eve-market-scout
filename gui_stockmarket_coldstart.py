@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from config import TRADE_HUBS
-from tk_queue import submit
 
 
 @dataclass
@@ -378,15 +377,6 @@ class StockMarketColdStartMixin:
                 )
                 print(f"[ColdStart] phase 3: {hub_name} done — "
                       f"{success:,} ok, {failed} failed")
-
-                # Trigger a panel refresh on the main thread so the
-                # newly-built profiles render without waiting for the
-                # MF/LI 24h trackers to expire.  Mirrors what
-                # _on_profiles_built does after _build_profiles_for_hub.
-                if success > 0:
-                    panel = self.hub_panels.get(hub_key)
-                    if panel:
-                        submit(lambda p=panel: p.refresh_display_async())
             except Exception as e:
                 print(f"[ColdStart] phase 3: {hub_name} failed: {e}")
                 # Continue with remaining regions instead of bailing the
@@ -582,13 +572,12 @@ class StockMarketColdStartMixin:
     # =========================================================================
 
     def _cold_start_phase7_unlock(self, detected: DetectedState):
-        """Submit panel refreshes for every enabled hub on the main thread.
+        """Mark cold-start complete so the locked overlay can hide.
 
-        Phase 3 already triggered a refresh for any hub it built profiles
-        for, but those refreshes ran before phases 5+6 and don't reflect
-        MF risk or LI columns.  A second refresh here picks up the latest
-        compute results.  Hubs with no profiles still get refreshed (a
-        no-op render) so the panel is at least in a known state.
+        Panel rendering is lazy — driven by _on_hub_tab_changed in
+        gui_stockmarket.py. Cold-start only acquires data; the first
+        time a hub tab is shown the panel runs refresh_display_async
+        itself.
         """
         self.phase_state.current_phase = 7
         self.phase_state.phase_name = "Refreshing displays"
@@ -596,14 +585,7 @@ class StockMarketColdStartMixin:
         self.phase_state.total = 0
         self.phase_state.detail = ""
 
-        for hub_key, config in TRADE_HUBS.items():
-            if not config.get("enabled", True):
-                continue
-            panel = self.hub_panels.get(hub_key)
-            if panel:
-                submit(lambda p=panel: p.refresh_display_async())
-
-        print("[ColdStart] === Phase 7 complete (panel refreshes submitted) ===")
+        print("[ColdStart] === Phase 7 complete (lazy render on tab change) ===")
 
     # =========================================================================
     # Logging helpers

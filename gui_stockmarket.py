@@ -224,11 +224,15 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         self._active_hub_key = hub_key
         self.settings.active_hub_key = hub_key
         save_settings(self.settings)
+        panel = self.hub_panels.get(hub_key)
+        if not panel:
+            return
         client = self.get_client() if self.get_client else None
         if client:
-            panel = self.hub_panels.get(hub_key)
-            if panel:
-                panel.render_from_cache(client.order_cache)
+            panel.render_from_cache(client.order_cache)
+        if not getattr(panel, "_has_rendered_once", False):
+            panel.refresh_display_async()
+            panel._has_rendered_once = True
 
     # =========================================================================
     # Status Updates
