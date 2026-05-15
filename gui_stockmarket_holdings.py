@@ -336,9 +336,26 @@ class HoldingsPanel:
             print(f"[Holdings] LI cache load error: {e}")
             li_cache = {}
         
+        # Prefetch 7d/30d history for ALL holdings in one SQLite query +
+        # one ESI cache lookup. _calculate_trend reads from these dicts
+        # instead of querying per-item. Mirrors gui_stockmarket_hub_refresh.
+        from market_history import get_market_history_db
+        holding_type_ids = [h.type_id for h in holdings]
+        sqlite_hist = (
+            get_market_history_db().get_history_bulk(
+                self.region_id, holding_type_ids, days=30
+            )
+            if holding_type_ids else {}
+        )
+        esi_cache = {}
+        if self.get_client:
+            client = self.get_client()
+            if client:
+                esi_cache = client.history_cache.get(self.region_id, {})
+
         # Build list with sort keys
         items_to_show = []
-        
+
         for entry in holdings:
             profile = self.profiles.get_computed_profile(entry.type_id, self.region_id)
             current_price = self.live_prices.get(entry.type_id, 0)
@@ -349,7 +366,7 @@ class HoldingsPanel:
                 from stockmarket_filters import check_material_risk
                 if check_material_risk(entry.type_id, self.region_id) == "medium":
                     trend_tag = "trend_up"
-            trend_pct = self._calculate_trend(entry.type_id)
+            trend_pct = self._calculate_trend(entry.type_id, sqlite_hist, esi_cache)
             
             items_to_show.append({
                 "entry": entry,
@@ -552,28 +569,23 @@ class HoldingsPanel:
             print(f"[Holdings] Material check error for {type_id}: {e}")
             return "skip"
     
-    def _calculate_trend(self, type_id: int) -> float | None:
+    def _calculate_trend(
+        self,
+        type_id: int,
+        sqlite_hist: dict,
+        esi_cache: dict,
+    ) -> float | None:
         """Calculate 7d vs 30d price trend percentage.
 
-        Merges everef SQLite history (covers all profiled items, lags
-        1-4 days) with ESI history_cache (fresh, but only scanner
-        candidates). SQLite gives coverage; ESI fills the recency gap.
-        Mirrors the merge in gui_stockmarket_hub_refresh.py used by the
-        risk panels.
+        Reads from caller-provided dicts (prefetched once per
+        refresh_display call) so we don't run N SQLite queries per
+        refresh. Merges everef SQLite history (covers all profiled
+        items, lags 1-4 days) with ESI history_cache (fresh, but only
+        scanner candidates). SQLite gives coverage; ESI fills the
+        recency gap. Mirrors the merge in gui_stockmarket_hub_refresh.
         """
-        from market_history import get_market_history_db
-        market_db = get_market_history_db()
-        sqlite_records = market_db.get_history_bulk(
-            self.region_id, [type_id], days=30
-        ).get(type_id, [])
-
-        esi_records = []
-        if self.get_client:
-            client = self.get_client()
-            if client:
-                esi_records = client.history_cache.get(
-                    self.region_id, {}
-                ).get(type_id, [])
+        sqlite_records = sqlite_hist.get(type_id, [])
+        esi_records = esi_cache.get(type_id, [])
 
         if sqlite_records and esi_records:
             sqlite_dates = {r.get("date") for r in sqlite_records}
