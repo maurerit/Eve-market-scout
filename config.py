@@ -30,7 +30,7 @@ TRADE_HUBS = {
         "station_id": 60008494,      # Amarr VIII (Oris) - Emperor Family Academy
         "region_id": 10000043,       # Domain
         "system_id": 30002187,       # Amarr solar system
-        "corp_id": 1000125,          # Emperor Family
+        "corp_id": 1000086,          # Emperor Family (verified against ESI standings dump 2026-05)
         "faction_id": 500003,        # Amarr Empire
         "enabled": True,
     },

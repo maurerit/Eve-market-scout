@@ -136,43 +136,61 @@ class PnLPanel:
             setattr(self, attr, label)
     
     def _create_rates_panel(self, parent: ttk.Frame):
-        """Create the fee rates display panel."""
+        """Create the fee rates display panel. Value labels are stored so
+        _update_rates_panel can refresh them after the user runs Refresh Skills."""
         rates_frame = ttk.LabelFrame(parent, text="Current Fee Rates", padding=10)
         rates_frame.pack(side=tk.LEFT, fill=tk.Y)
-        
-        # Load skills for this hub
-        skills = load_cached_skills(self.hub_key, slot="seller")
-        broker_rate = get_broker_fee_rate(skills)
-        tax_rate = get_sales_tax_rate(skills)
-        
-        rates = [
-            ("Broker Fee:", f"{broker_rate:.2f}%"),
-            ("Sales Tax:", f"{tax_rate:.2f}%"),
-            ("Total:", f"{broker_rate + tax_rate:.2f}%"),
-        ]
-        
-        for text, value in rates:
+
+        # Fee rate rows (label widgets stored for live update)
+        self._rate_value_labels = {}
+        for key, text in [
+            ("broker", "Broker Fee:"),
+            ("tax", "Sales Tax:"),
+            ("total", "Total:"),
+        ]:
             row = ttk.Frame(rates_frame)
             row.pack(fill=tk.X, pady=2)
             ttk.Label(row, text=text, width=12, anchor=tk.W).pack(side=tk.LEFT)
-            ttk.Label(row, text=value, width=10, anchor=tk.E).pack(side=tk.RIGHT)
-        
-        # Skill info
+            v = ttk.Label(row, text="-", width=10, anchor=tk.E)
+            v.pack(side=tk.RIGHT)
+            self._rate_value_labels[key] = v
+
+        # Skill info (label widgets stored for live update)
         ttk.Separator(rates_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
-        
-        skill_info = [
-            ("Broker Rel:", str(skills.broker_relations)),
-            ("Accounting:", str(skills.accounting)),
-            ("Adv Broker:", str(skills.advanced_broker_relations)),
-            ("Station:", f"{skills.station_standing:.2f}"),
-            ("Faction:", f"{skills.faction_standing:.2f}"),
-        ]
-        
-        for text, value in skill_info:
+
+        self._skill_value_labels = {}
+        for key, text in [
+            ("broker_relations", "Broker Rel:"),
+            ("accounting", "Accounting:"),
+            ("advanced_broker_relations", "Adv Broker:"),
+            ("station_standing", "Station:"),
+            ("faction_standing", "Faction:"),
+        ]:
             row = ttk.Frame(rates_frame)
             row.pack(fill=tk.X, pady=1)
             ttk.Label(row, text=text, width=12, anchor=tk.W, font=("Segoe UI", 8)).pack(side=tk.LEFT)
-            ttk.Label(row, text=value, width=10, anchor=tk.E, font=("Segoe UI", 8)).pack(side=tk.RIGHT)
+            v = ttk.Label(row, text="-", width=10, anchor=tk.E, font=("Segoe UI", 8))
+            v.pack(side=tk.RIGHT)
+            self._skill_value_labels[key] = v
+
+        # Populate now
+        self._update_rates_panel()
+
+    def _update_rates_panel(self):
+        """Re-read cached skills/standings and update the rates labels."""
+        skills = load_cached_skills(self.hub_key, slot="seller")
+        broker_rate = get_broker_fee_rate(skills)
+        tax_rate = get_sales_tax_rate(skills)
+
+        self._rate_value_labels["broker"].configure(text=f"{broker_rate:.2f}%")
+        self._rate_value_labels["tax"].configure(text=f"{tax_rate:.2f}%")
+        self._rate_value_labels["total"].configure(text=f"{broker_rate + tax_rate:.2f}%")
+
+        self._skill_value_labels["broker_relations"].configure(text=str(skills.broker_relations))
+        self._skill_value_labels["accounting"].configure(text=str(skills.accounting))
+        self._skill_value_labels["advanced_broker_relations"].configure(text=str(skills.advanced_broker_relations))
+        self._skill_value_labels["station_standing"].configure(text=f"{skills.station_standing:.2f}")
+        self._skill_value_labels["faction_standing"].configure(text=f"{skills.faction_standing:.2f}")
     
     def _create_treeview(self):
         """Create the item breakdown treeview."""
@@ -251,6 +269,10 @@ class PnLPanel:
     
     def refresh_display(self):
         """Refresh the display with current P&L data."""
+        # Re-read cached skills/standings so the rates panel reflects any
+        # Refresh Skills the user has done since this panel was created.
+        self._update_rates_panel()
+
         # Update summary
         summary = self.pnl.get_summary()
         

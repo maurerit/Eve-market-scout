@@ -14,17 +14,16 @@ from calculate import TradingSkills
 
 BASE_URL = "https://esi.evetech.net/latest"
 
-# Trading skill type IDs
+# Trading skill type IDs (verified against SDE 2026-05)
 SKILL_IDS = {
     "accounting": 16622,
     "broker_relations": 3446,
-    "advanced_broker_relations": 25235,
+    "advanced_broker_relations": 16597,  # formerly named "Margin Trading"; renamed by CCP
     # Other useful ones for future
     "trade": 3443,
     "retail": 3444,
     "wholesale": 16596,
     "tycoon": 18580,
-    "margin_trading": 16597,
     "daytrading": 16595,
     "marketing": 16598,
     "procurement": 16594,
