@@ -24,22 +24,28 @@ DEFAULT_BUY_PERCENTILE = 15
 DEFAULT_SELL_PERCENTILE = 90
 DEFAULT_FLOOR_OFFSET_PCT = 5.0
 DEFAULT_PEAK_OFFSET_PCT = -5.0
+DEFAULT_MIN_DAILY_VOLUME = 100  # Below this, skip material/LI compute entirely
 
 
 @dataclass
 class StockMarketSettings:
     """Stock market configuration settings."""
-    
+
     # Archive location (None = use default in Roaming)
     archive_path: Optional[str] = None
-    
+
     # Percentiles for profile calculation (requires rebuild)
     buy_percentile: int = DEFAULT_BUY_PERCENTILE
     sell_percentile: int = DEFAULT_SELL_PERCENTILE
-    
+
     # Offsets for buy/sell targets (no rebuild needed)
     floor_offset_pct: float = DEFAULT_FLOOR_OFFSET_PCT
     peak_offset_pct: float = DEFAULT_PEAK_OFFSET_PCT
+
+    # Compute-time volume gate. Items with avg_daily_volume below this are
+    # excluded from material filter and leading indicators passes (saves time;
+    # data is preserved, just not analyzed). Requires next scan to take effect.
+    min_daily_volume: int = DEFAULT_MIN_DAILY_VOLUME
 
     # Last active hub tab (restored on launch)
     active_hub_key: Optional[str] = None
@@ -63,6 +69,7 @@ class StockMarketSettings:
             sell_percentile=data.get("sell_percentile", DEFAULT_SELL_PERCENTILE),
             floor_offset_pct=data.get("floor_offset_pct", DEFAULT_FLOOR_OFFSET_PCT),
             peak_offset_pct=data.get("peak_offset_pct", DEFAULT_PEAK_OFFSET_PCT),
+            min_daily_volume=data.get("min_daily_volume", DEFAULT_MIN_DAILY_VOLUME),
             active_hub_key=data.get("active_hub_key"),
         )
 
@@ -247,10 +254,34 @@ class StockMarketSettingsDialog(tk.Toplevel):
         peak_spin.grid(row=1, column=1, padx=10, pady=3)
         ttk.Label(offset_grid, text="(+ = above peak, - = below)", foreground="gray").grid(row=1, column=2, sticky=tk.W)
         
+        # Volume filter (compute-time gate)
+        volume_frame = ttk.LabelFrame(self, text="Volume Filter (Requires Rescan)", padding=10)
+        volume_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        ttk.Label(
+            volume_frame,
+            text="Items below this avg daily volume are skipped from material "
+                 "filter and leading indicators. Data is preserved, just not "
+                 "analyzed. Takes effect on next scan.",
+            font=("Segoe UI", 8),
+            foreground="gray",
+            wraplength=440,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W)
+
+        volume_grid = ttk.Frame(volume_frame)
+        volume_grid.pack(fill=tk.X, pady=5)
+
+        ttk.Label(volume_grid, text="Min Daily Volume:").grid(row=0, column=0, sticky=tk.W, pady=3)
+        self.min_volume_var = tk.StringVar(value=str(self.settings.min_daily_volume))
+        ttk.Entry(volume_grid, textvariable=self.min_volume_var, width=10).grid(row=0, column=1, padx=10, pady=3)
+        ttk.Label(volume_grid, text=f"(units/day, default {DEFAULT_MIN_DAILY_VOLUME})",
+                  foreground="gray").grid(row=0, column=2, sticky=tk.W)
+
         # Filters note
         filter_note = ttk.LabelFrame(self, text="Filtering", padding=10)
         filter_note.pack(fill=tk.X, padx=10, pady=5)
-        
+
         ttk.Label(
             filter_note,
             text="Profitability and trend filters are in the Stock Market 'Filters' dialog.",
@@ -323,7 +354,8 @@ class StockMarketSettingsDialog(tk.Toplevel):
         self.sell_pct_var.set(str(DEFAULT_SELL_PERCENTILE))
         self.floor_var.set(str(DEFAULT_FLOOR_OFFSET_PCT))
         self.peak_var.set(str(DEFAULT_PEAK_OFFSET_PCT))
-    
+        self.min_volume_var.set(str(DEFAULT_MIN_DAILY_VOLUME))
+
     def _on_save(self):
         """Validate and save settings."""
         try:
@@ -331,8 +363,13 @@ class StockMarketSettingsDialog(tk.Toplevel):
             sell_pct = int(self.sell_pct_var.get())
             floor_offset = float(self.floor_var.get())
             peak_offset = float(self.peak_var.get())
+            min_volume = int(self.min_volume_var.get())
         except ValueError:
             messagebox.showerror("Invalid Input", "Please enter valid numbers for all fields.")
+            return
+
+        if min_volume < 0:
+            messagebox.showerror("Invalid", "Min Daily Volume must be 0 or greater.")
             return
         
         # Validate ranges
@@ -367,13 +404,15 @@ class StockMarketSettingsDialog(tk.Toplevel):
             if not result:
                 return
         
-        # Create new settings
+        # Create new settings (preserve any fields not editable in this dialog)
         new_settings = StockMarketSettings(
             archive_path=archive_path,
             buy_percentile=buy_pct,
             sell_percentile=sell_pct,
             floor_offset_pct=floor_offset,
             peak_offset_pct=peak_offset,
+            min_daily_volume=min_volume,
+            active_hub_key=self.settings.active_hub_key,
         )
         
         # Save to disk

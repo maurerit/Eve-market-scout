@@ -145,48 +145,6 @@ class TrackingTabManager:
                 self.stock_market_tab.sync_orders_to_pnl
             )
 
-    def _fetch_skills_and_standings(self, slot: str = "seller", hub: str = None):
-        """Fetch skills and standings from ESI, combine into TradingSkills.
-        
-        Args:
-            slot: "seller" or "buyer"
-            hub: Hub key for standings lookup (defaults to self.selected_hub)
-        """
-        if not self.esi_skills:
-            return
-        
-        fetched_skills = self.esi_skills.fetch_skills(slot=slot, force_refresh=True)
-        if not fetched_skills:
-            return
-        
-        station_standing = 0.0
-        faction_standing = 0.0
-        
-        hub_key = hub or self.selected_hub
-        
-        if self.esi_standings:
-            corp_standing, fac_standing = self.esi_standings.get_standings_for_hub(hub_key, slot=slot)
-            station_standing = corp_standing
-            faction_standing = fac_standing
-            char_name = self.auth.seller_name if slot == "seller" else self.auth.buyer_name
-            print(f"ESI Standings for {char_name} ({hub_key}): Station={station_standing:.2f}, Faction={faction_standing:.2f}")
-        
-        skills_obj = TradingSkills(
-            broker_relations=fetched_skills.broker_relations,
-            accounting=fetched_skills.accounting,
-            advanced_broker_relations=fetched_skills.advanced_broker_relations,
-            station_standing=station_standing,
-            faction_standing=faction_standing
-        )
-        
-        if slot == "buyer":
-            self.buyer_skills = skills_obj
-            print(f"Buyer skills updated: BR={skills_obj.broker_relations}, Acc={skills_obj.accounting}, ABR={skills_obj.advanced_broker_relations}")
-        else:
-            self.skills = skills_obj
-            self.tracker.set_skills(self.skills)
-            print(f"Seller skills updated: BR={skills_obj.broker_relations}, Acc={skills_obj.accounting}, ABR={skills_obj.advanced_broker_relations}")
-    
     def refresh_all_character_data(self, sell_hub: str = None, buy_hub: str = None):
         """Refresh skills and standings for both characters.
         
@@ -362,11 +320,6 @@ class TrackingTabManager:
             font=("Segoe UI", 8),
             foreground="gray"
         ).pack(side=tk.LEFT, padx=10)
-        
-        # Legacy compatibility - keep old references pointing to seller
-        self.auth_status = self.seller_status
-        self.login_btn = self.seller_login_btn
-        self.logout_btn = self.seller_logout_btn
 
     def _create_trades_panel(self):
         """Create right trades list panel."""

@@ -126,17 +126,24 @@ def save_batch(entries) -> int:
         return 0
 
 
+def _fresh_cutoff() -> str:
+    # Today OR yesterday — matches the tracker's 24h rolling window across
+    # midnight rollover. PK is (type_id, region_id) so there's only ever one
+    # row per item; cutoff just bounds how stale it can be.
+    return (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
 def has_today_data(region_id: int) -> bool:
-    """Return True if any cached rows exist for region with today's date."""
-    today = date.today().strftime("%Y-%m-%d")
+    """Return True if recent (<=1 day old) cached rows exist for region."""
+    cutoff = _fresh_cutoff()
     try:
         conn = _connect()
         try:
             cur = conn.execute("""
                 SELECT 1 FROM material_risk_cache
-                WHERE region_id = ? AND computed_date = ?
+                WHERE region_id = ? AND computed_date >= ?
                 LIMIT 1
-            """, (region_id, today))
+            """, (region_id, cutoff))
             return cur.fetchone() is not None
         finally:
             conn.close()
@@ -147,12 +154,12 @@ def has_today_data(region_id: int) -> bool:
 
 
 def load_all_today() -> Dict[Tuple[int, int], str]:
-    """Load all rows with today's date.
+    """Load recent (<=1 day old) rows.
 
     Returns dict shaped like _material_risk_cache:
         {(type_id, region_id): classification}
     """
-    today = date.today().strftime("%Y-%m-%d")
+    cutoff = _fresh_cutoff()
     result: Dict[Tuple[int, int], str] = {}
     try:
         conn = _connect()
@@ -160,38 +167,38 @@ def load_all_today() -> Dict[Tuple[int, int], str]:
             cur = conn.execute("""
                 SELECT type_id, region_id, classification
                 FROM material_risk_cache
-                WHERE computed_date = ?
-            """, (today,))
+                WHERE computed_date >= ?
+            """, (cutoff,))
             for row in cur:
                 result[(row["type_id"], row["region_id"])] = row["classification"]
         finally:
             conn.close()
-        print(f"[MaterialRiskStorage] Loaded {len(result)} entries for {today}")
+        print(f"[MaterialRiskStorage] Loaded {len(result)} entries (since {cutoff})")
     except Exception as e:
         print(f"[MaterialRiskStorage] load_all_today error: {e}")
     return result
 
 
 def delete_today_for_region(region_id: int) -> int:
-    """Delete today's rows for a specific region.
+    """Delete recent (<=1 day old) rows for a specific region.
 
     Called when the in-memory cache for a region is being cleared so
     the next has_today_data() check correctly reports False.
 
     Returns number of rows deleted.
     """
-    today = date.today().strftime("%Y-%m-%d")
+    cutoff = _fresh_cutoff()
     try:
         conn = _connect()
         try:
             cur = conn.execute("""
                 DELETE FROM material_risk_cache
-                WHERE region_id = ? AND computed_date = ?
-            """, (region_id, today))
+                WHERE region_id = ? AND computed_date >= ?
+            """, (region_id, cutoff))
             conn.commit()
             deleted = cur.rowcount
             print(f"[MaterialRiskStorage] Deleted {deleted} rows for "
-                  f"region {region_id} ({today})")
+                  f"region {region_id} (since {cutoff})")
             return deleted
         finally:
             conn.close()

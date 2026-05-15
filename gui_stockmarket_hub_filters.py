@@ -228,6 +228,18 @@ class HubFilterPhaseMixin:
             # Walk profiles to find stable-floor candidates
             region_profiles = self.profiles.get_profiles_for_region(self.region_id)
 
+            # Compute-time volume gate: skip low-volume items entirely.
+            min_volume = getattr(self.settings, "min_daily_volume", 0)
+            if min_volume > 0:
+                before = len(region_profiles)
+                region_profiles = [
+                    p for p in region_profiles
+                    if getattr(p, "avg_daily_volume", 0) >= min_volume
+                ]
+                print(f"[StockMarket-{self.hub_key}] Volume gate: "
+                      f"{len(region_profiles)}/{before} pass "
+                      f"(>= {min_volume}/day)")
+
             # Batched fetch - one query instead of N connections
             all_stats = self.profiles.get_all_yearly_stats_for_region(
                 self.region_id, context_label=self.hub_key
@@ -413,6 +425,19 @@ class HubFilterPhaseMixin:
         try:
             from market_history import get_market_history_db
             region_profiles = self.profiles.get_profiles_for_region(self.region_id)
+
+            # Compute-time volume gate: skip low-volume items entirely.
+            min_volume = getattr(self.settings, "min_daily_volume", 0)
+            if min_volume > 0:
+                before = len(region_profiles)
+                region_profiles = [
+                    p for p in region_profiles
+                    if getattr(p, "avg_daily_volume", 0) >= min_volume
+                ]
+                print(f"[StockMarket-{self.hub_key}] LI volume gate: "
+                      f"{len(region_profiles)}/{before} pass "
+                      f"(>= {min_volume}/day)")
+
             total = len(region_profiles)
             print(f"[StockMarket-{self.hub_key}] "
                   f"=== PHASE: Leading Indicators === "
