@@ -480,13 +480,8 @@ class InventoryManager:
         active = [e for e in entries if e.is_active]
         total_realized = sum(e.total_realized_profit for e in entries)
         total_fees = sum(e.total_listing_fees for e in entries)
-        # Realized after listing fees apportioned: subtract qty_out/qty_in share of total fees
-        # (Fees are paid up-front per listing; we attribute them proportionally to sold qty.)
-        realized_after_fees = total_realized
-        for e in entries:
-            if e.quantity_in > 0 and e.total_listing_fees > 0:
-                share = e.quantity_out / e.quantity_in
-                realized_after_fees -= e.total_listing_fees * share
+        # Cash-flow net: realized profit minus every listing/relist fee ever paid.
+        realized_after_fees = total_realized - total_fees
 
         return {
             "total_items": len(entries),

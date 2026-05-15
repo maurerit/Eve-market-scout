@@ -12,10 +12,12 @@ from calculate_trades import calculate_trade_fees, get_profit_trends
 
 
 def _trends_from_inventory(entries) -> dict:
-    """Compute day/week/month/year profit trends from InventoryEntry sales.
+    """Compute day/week/month/year net profit trends from InventoryEntry data.
 
-    Realized profit per sale = sell_price * quantity - cost_basis - sales_tax.
-    Sale timestamp comes from SaleRecord.sold_at (ISO string).
+    Per-sale realized profit (revenue - cost_basis - sales_tax) bucketed by
+    sold_at, minus broker/listing fees bucketed by the time they were paid
+    (listing creation + each relist). This matches the cash-flow definition
+    used in the Totals panel: Net Profit = Revenue - Cost of Sold - All Fees.
     """
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
@@ -26,18 +28,41 @@ def _trends_from_inventory(entries) -> dict:
         "year": now - timedelta(days=365),
     }
     totals = {k: 0.0 for k in cutoffs}
+
+    def _parse(ts: str):
+        try:
+            t = datetime.fromisoformat(ts)
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            return t
+        except (ValueError, TypeError):
+            return None
+
     for entry in entries:
         for sale in entry.sales:
-            try:
-                sold = datetime.fromisoformat(sale.sold_at)
-                if sold.tzinfo is None:
-                    sold = sold.replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError):
+            sold = _parse(sale.sold_at)
+            if sold is None:
                 continue
             profit = (sale.sell_price * sale.quantity) - sale.cost_basis - sale.sales_tax
             for period, cutoff in cutoffs.items():
                 if sold >= cutoff:
                     totals[period] += profit
+        # Initial broker fee per listing, bucketed by listed_at
+        for listing in entry.active_listings:
+            paid_at = _parse(listing.listed_at)
+            if paid_at is None or not listing.broker_fee:
+                continue
+            for period, cutoff in cutoffs.items():
+                if paid_at >= cutoff:
+                    totals[period] -= listing.broker_fee
+        # Relist fees, bucketed by their timestamp
+        for relist in entry.relists:
+            paid_at = _parse(relist.timestamp)
+            if paid_at is None or not relist.fee:
+                continue
+            for period, cutoff in cutoffs.items():
+                if paid_at >= cutoff:
+                    totals[period] -= relist.fee
     return totals
 
 
@@ -111,18 +136,22 @@ class SummaryPanel:
             entries: List of InventoryEntry (all of them, not just active)
             wallet_balance: Current wallet balance (0 if unavailable)
         """
+        # Cash-flow accounting:
+        #   Revenue   = total sales income
+        #   Expenses  = cost basis of items actually sold (matched to revenue)
+        #   Fees      = ALL broker fees + ALL sales tax (every fee ever paid)
+        #   Net       = Revenue - Expenses - Fees  (algebra balances)
+        # Cost of sold = total_buy_cost - remaining_cost_basis (FIFO-consumed lots).
         total_revenue = sum(e.total_revenue for e in entries)
-        total_buy_cost = sum(e.total_buy_cost for e in entries)
-        total_fees = sum(e.total_listing_fees + e.total_sales_tax for e in entries)
-        # Net profit = realized profit summed across entries, minus listing fees
-        # proportionally apportioned to sold quantity (mirrors get_summary).
-        net_profit = sum(e.total_realized_profit for e in entries)
-        for e in entries:
-            if e.quantity_in > 0 and e.total_listing_fees > 0:
-                share = e.quantity_out / e.quantity_in
-                net_profit -= e.total_listing_fees * share
+        total_cost_of_sold = sum(
+            e.total_buy_cost - e.remaining_cost_basis for e in entries
+        )
+        total_listing_fees = sum(e.total_listing_fees for e in entries)
+        total_sales_tax = sum(e.total_sales_tax for e in entries)
+        total_fees = total_listing_fees + total_sales_tax
 
-        total_expenses = total_buy_cost + total_fees
+        total_expenses = total_cost_of_sold
+        net_profit = total_revenue - total_expenses - total_fees
 
         if wallet_balance > 0:
             self.balance_label.configure(text=format_isk(wallet_balance) + " ISK")

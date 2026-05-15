@@ -376,7 +376,13 @@ class TrackingTabManager:
         filter_frame.pack(fill=tk.X, pady=(0, 5))
         
         self.filter_var = tk.StringVar(value="active")
-        filters = [("Active", "active"), ("All", "all")]
+        filters = [
+            ("Active", "active"),
+            ("Pending", "pending"),
+            ("Listed", "listed"),
+            ("Sold", "sold"),
+            ("All", "all"),
+        ]
         for text, value in filters:
             ttk.Radiobutton(
                 filter_frame, text=text, value=value,
@@ -690,6 +696,16 @@ class TrackingTabManager:
         filter_type = self.filter_var.get()
         if filter_type == "active":
             entries = [e for e in all_entries if e.is_active]
+        elif filter_type == "listed":
+            entries = [e for e in all_entries if e.active_listings]
+        elif filter_type == "pending":
+            # Pending = flagged or bought-but-not-listed (no active listings, no sales)
+            entries = [e for e in all_entries
+                       if not e.active_listings and e.quantity_out == 0]
+        elif filter_type == "sold":
+            # Sold = has sales but nothing currently held or listed
+            entries = [e for e in all_entries
+                       if e.quantity_out > 0 and not e.is_active]
         else:
             entries = all_entries
 
@@ -725,12 +741,13 @@ class TrackingTabManager:
         held_str = str(entry.quantity_held) if entry.quantity_held else "-"
         listed_str = str(entry.quantity_listed) if entry.quantity_listed else "-"
 
-        # Net profit for this entry = realized - listing-fee share
-        net_profit = entry.total_realized_profit
-        if entry.quantity_in > 0 and entry.total_listing_fees > 0:
-            share = entry.quantity_out / entry.quantity_in
-            net_profit -= entry.total_listing_fees * share
-        profit_str = format_isk(net_profit) if entry.quantity_out > 0 else "-"
+        # Net profit (cash-flow): realized profit minus ALL listing fees ever
+        # paid for this item. Matches the Summary panel's Net Profit math.
+        net_profit = entry.total_realized_profit - entry.total_listing_fees
+        if entry.quantity_out > 0 or entry.total_listing_fees > 0:
+            profit_str = format_isk(net_profit)
+        else:
+            profit_str = "-"
 
         total_fees = entry.total_listing_fees + entry.total_sales_tax
         fees_str = format_isk(total_fees) if total_fees else "-"
