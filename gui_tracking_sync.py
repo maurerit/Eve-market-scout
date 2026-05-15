@@ -81,7 +81,10 @@ class ESISyncManager:
         
         # Holdings wallet transaction sync callback (set externally)
         self.on_wallet_synced: Optional[Callable[["ESIWallet"], None]] = None
-        
+
+        # P&L sync callback (set externally)
+        self.on_pnl_synced: Optional[Callable[[List[dict], "ESIWallet"], None]] = None
+
         # Last fetched market orders (shared with TrackingTabManager)
         self.market_orders_cache: List[dict] = []
         
@@ -110,12 +113,20 @@ class ESISyncManager:
     
     def set_wallet_sync_callback(self, callback: Callable[["ESIWallet"], None]):
         """Set callback for syncing wallet transactions to holdings.
-        
+
         Args:
             callback: Function that takes ESIWallet instance
         """
         self.on_wallet_synced = callback
-    
+
+    def set_pnl_sync_callback(self, callback: Callable[[List[dict], "ESIWallet"], None]):
+        """Set callback for syncing orders/wallet to P&L tracking.
+
+        Args:
+            callback: Function that takes (char_orders_list, ESIWallet)
+        """
+        self.on_pnl_synced = callback
+
     def set_ui_refs(self, frame, refresh_btn, countdown_label, on_complete: Callable):
         """Set UI widget references for updates."""
         self.frame = frame
@@ -274,7 +285,27 @@ class ESISyncManager:
                             self.on_wallet_synced(self.wallet)
                         except Exception as e:
                             print(f"[ESISync] Holdings wallet sync error: {e}")
-                    
+
+                    # Sync orders + wallet to P&L tracking
+                    if self.on_pnl_synced and self.wallet:
+                        try:
+                            char_orders_for_pnl = [
+                                {
+                                    "order_id": o.order_id,
+                                    "type_id": o.type_id,
+                                    "is_buy_order": o.is_buy_order,
+                                    "price": o.price,
+                                    "volume_remain": o.volume_remain,
+                                    "issued": o.issued,
+                                    "location_id": o.location_id,
+                                    "escrow": o.escrow,
+                                }
+                                for o in self.wallet.orders
+                            ]
+                            self.on_pnl_synced(char_orders_for_pnl, self.wallet)
+                        except Exception as e:
+                            print(f"[ESISync] P&L sync error: {e}")
+
                     status_parts = [f"Balance: {format_isk(self.wallet.balance)}"]
                     if sync_results["buys_matched"]:
                         status_parts.append(f"{sync_results['buys_matched']} buy(s) matched")

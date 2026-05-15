@@ -289,8 +289,10 @@ class PnLPanel:
                 except (ValueError, TypeError):
                     pass
             
-            # Calculate P&L for this item
-            item_pnl = entry.total_sold_value - entry.total_invested - entry.total_fees
+            # Per-item realized P&L. Uses realized cost basis (total_bought_value),
+            # NOT total_invested — the latter includes escrow on open buy orders,
+            # which isn't a realized cost yet.
+            item_pnl = entry.realized_pnl_simple
             
             tag = "profit" if item_pnl >= 0 else "loss"
             
@@ -340,7 +342,7 @@ class PnLPanel:
             elif self.sort_column == "total_fees":
                 return entry.total_fees
             elif self.sort_column == "pnl":
-                return entry.total_sold_value - entry.total_invested - entry.total_fees
+                return entry.realized_pnl_simple
             return 0
         
         return sorted(entries, key=get_sort_key, reverse=self.sort_reverse)

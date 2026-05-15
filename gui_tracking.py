@@ -140,6 +140,10 @@ class TrackingTabManager:
             self.sync_manager.set_wallet_sync_callback(
                 self.stock_market_tab.sync_wallet_to_holdings
             )
+            # Sync orders + wallet to P&L tracking (broker fees, sales tax, mods)
+            self.sync_manager.set_pnl_sync_callback(
+                self.stock_market_tab.sync_orders_to_pnl
+            )
 
     def _fetch_skills_and_standings(self, slot: str = "seller", hub: str = None):
         """Fetch skills and standings from ESI, combine into TradingSkills.
@@ -576,7 +580,7 @@ class TrackingTabManager:
             """Background thread work."""
             sell_hub = self._sell_hub_override or self.selected_hub
             buy_hub = self._buy_hub_override or sell_hub
-            
+
             # Fetch seller skills/standings
             seller_skills = None
             if self.auth.is_authenticated:
@@ -585,6 +589,8 @@ class TrackingTabManager:
                     station_standing = 0.0
                     faction_standing = 0.0
                     if self.esi_standings:
+                        # Force-refresh standings so in-memory cache doesn't shadow ESI
+                        self.esi_standings.fetch_standings(force_refresh=True, slot="seller")
                         corp, fac = self.esi_standings.get_standings_for_hub(sell_hub, slot="seller")
                         station_standing = corp
                         faction_standing = fac
@@ -605,6 +611,8 @@ class TrackingTabManager:
                     station_standing = 0.0
                     faction_standing = 0.0
                     if self.esi_standings:
+                        # Force-refresh standings so in-memory cache doesn't shadow ESI
+                        self.esi_standings.fetch_standings(force_refresh=True, slot="buyer")
                         corp, fac = self.esi_standings.get_standings_for_hub(buy_hub, slot="buyer")
                         station_standing = corp
                         faction_standing = fac

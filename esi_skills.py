@@ -18,7 +18,7 @@ BASE_URL = "https://esi.evetech.net/latest"
 SKILL_IDS = {
     "accounting": 16622,
     "broker_relations": 3446,
-    "advanced_broker_relations": 18580,
+    "advanced_broker_relations": 25235,
     # Other useful ones for future
     "trade": 3443,
     "retail": 3444,
@@ -427,20 +427,47 @@ class ESIStandings:
             'factions': {}
         }
         
+        # Diagnostic: log raw response shape so we can verify ESI is returning
+        # the expected corp standings (e.g., Emperor Family 1000125 for Amarr).
+        from_type_counts = {}
+        for entry in data:
+            t = entry.get('from_type', 'unknown')
+            from_type_counts[t] = from_type_counts.get(t, 0) + 1
+        print(f"[StandingsDiag] /standings/ raw response: {len(data)} entries; "
+              f"from_type counts: {from_type_counts}")
+
+        unknown_types = set()
         for entry in data:
             from_id = entry.get('from_id')
             from_type = entry.get('from_type')
             base_standing = entry.get('standing', 0.0)
-            
+
             # Apply Connections/Diplomacy modifier
             effective_standing = self._apply_skill_modifier(base_standing, slot)
-            
+
             if from_type == 'agent':
                 standings['agents'][from_id] = effective_standing
             elif from_type == 'npc_corp':
                 standings['npc_corps'][from_id] = effective_standing
             elif from_type == 'faction':
                 standings['factions'][from_id] = effective_standing
+            else:
+                unknown_types.add(from_type)
+
+        if unknown_types:
+            print(f"[StandingsDiag] Unrecognized from_type values: {unknown_types}")
+
+        # Verify the hub-relevant corp IDs are present
+        from config import TRADE_HUBS
+        for hub_key, cfg in TRADE_HUBS.items():
+            cid = cfg.get("corp_id")
+            fid = cfg.get("faction_id")
+            corp_val = standings['npc_corps'].get(cid)
+            fac_val = standings['factions'].get(fid)
+            print(f"[StandingsDiag] {hub_key}: corp_id={cid} -> "
+                  f"{corp_val if corp_val is not None else 'MISSING'}, "
+                  f"faction_id={fid} -> "
+                  f"{fac_val if fac_val is not None else 'MISSING'}")
         
         # Store in appropriate cache
         if slot == "buyer":

@@ -419,98 +419,160 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
     
     def sync_orders_to_pnl(self, char_orders: List[dict], wallet: "ESIWallet"):
         """Sync character orders to P&L tracking for fee calculation.
-        
+
         Called on each ESI refresh cycle. Tracks:
-        - New buy/sell order placements (broker fees)
-        - Order price modifications (relist fees)
-        - Completed sales (sales tax)
-        
-        Args:
-            char_orders: List of character's active orders from ESI
-            wallet: ESIWallet instance with transactions and journal
+        - New buy/sell order placements (broker fees) — sourced from wallet journal
+        - Escrow committed in open buy orders — recomputed each refresh
+        - Order price modifications (relist fees) — TODO: still skill-estimate
+        - Completed sales (sales tax) — sourced from wallet journal
+
+        Retry policy: if a journal entry isn't found for a fresh order/transaction,
+        skip recording this refresh; try again next time. After JOURNAL_AGE_LIMIT_DAYS,
+        fall back to a skill-based estimate (journal retention ~30 days).
         """
         if not char_orders and not wallet:
             return
-        
+
         from sde_manager import get_sde_manager
+        from calculate import (
+            calculate_broker_fee, calculate_sales_tax, load_cached_skills,
+        )
         sde = get_sde_manager()
-        
+
+        # Past this age, the journal entry has rolled off ESI retention (~30d).
+        # Fall back to the skill-based estimate so the order doesn't retry forever.
+        JOURNAL_AGE_LIMIT_DAYS = 25
+
+        now = datetime.now(timezone.utc)
+
         for hub_key, panel in self.hub_panels.items():
             if not panel.pnl_panel:
                 continue
-            
+
             try:
                 pnl = panel.pnl_panel.get_pnl_manager()
                 config = get_hub_config(hub_key)
                 station_id = config["station_id"]
-                
+
                 # Get holdings type_ids for this hub (only track items in holdings)
                 holdings_type_ids = set()
                 if panel.holdings_panel:
                     holdings_type_ids = set(panel.holdings_panel.holdings.get_type_ids())
-                
+
                 if not holdings_type_ids:
                     continue
-                
-                # Filter orders to this hub's station and holdings items
+
+                # Skills used for estimate-fallback only (loaded once per hub).
+                skills = load_cached_skills(hub_key, slot="seller")
+
+                # Filter dict-shaped orders to this hub's holdings (for mod check)
                 hub_orders = [
                     o for o in char_orders
                     if o.get("type_id") in holdings_type_ids
                 ]
-                
-                # Check for order modifications (price changes)
+
+                # Reset escrow for all entries; we'll re-add from current orders below.
+                pnl.reset_escrow()
+
+                # Check for order modifications (price changes). Uses journal-sourced
+                # fees with the same retry/estimate-fallback policy as placement fees.
                 if hub_orders:
-                    mod_fees = pnl.check_order_modifications(hub_orders, holdings_type_ids)
+                    mod_fees = pnl.check_order_modifications(
+                        hub_orders, holdings_type_ids,
+                        wallet=wallet, age_limit_days=JOURNAL_AGE_LIMIT_DAYS,
+                    )
                     if mod_fees:
-                        print(f"[PnL-{hub_key}] Detected {len(mod_fees)} order modification(s)")
-                
-                # Record new orders from wallet.orders (with location filtering)
+                        print(f"[PnL-{hub_key}] Recorded {len(mod_fees)} order modification(s)")
+
+                # Process active orders: broker fees + escrow
                 if wallet and wallet.orders:
                     for order in wallet.orders:
                         if order.type_id not in holdings_type_ids:
                             continue
-                        # Filter by station if available
-                        if hasattr(order, 'location_id') and order.location_id != station_id:
+                        if order.location_id != station_id:
                             continue
-                        
+
                         type_name = sde.get_type_name(order.type_id) or f"Type {order.type_id}"
-                        
+
+                        # Escrow: accumulate per-type from currently-active buy orders
+                        if order.is_buy_order and order.escrow > 0:
+                            pnl.add_escrow(order.type_id, type_name, order.escrow)
+
+                        # Broker fee: only if we haven't already recorded this order
+                        already_processed = (
+                            pnl.is_buy_order_processed(order.order_id, order.type_id)
+                            if order.is_buy_order
+                            else pnl.is_sell_order_processed(order.order_id, order.type_id)
+                        )
+                        if already_processed:
+                            continue
+
+                        # Look up actual broker fee from journal
+                        fee = wallet.get_broker_fee_for_order(
+                            order.order_id, issued=order.issued
+                        )
+
+                        if fee <= 0:
+                            # Journal entry not found yet. If the order is older than
+                            # the journal retention window, fall back to estimate;
+                            # otherwise skip and retry next refresh.
+                            age_days = (now - order.issued).days
+                            if age_days < JOURNAL_AGE_LIMIT_DAYS:
+                                continue
+                            fee = calculate_broker_fee(order.price, order.volume_remain, skills)
+                            print(f"[PnL-{hub_key}] Order {order.order_id} age={age_days}d — "
+                                  f"journal entry gone, using estimate {fee:,.0f} ISK")
+
                         if order.is_buy_order:
                             pnl.record_buy_order(
                                 order.order_id, order.type_id, type_name,
-                                order.price, order.volume_remain
+                                order.price, order.volume_remain, fee_amount=fee,
                             )
                         else:
                             pnl.record_sell_order(
                                 order.order_id, order.type_id, type_name,
-                                order.price, order.volume_remain
+                                order.price, order.volume_remain, fee_amount=fee,
                             )
-                
-                # Record transactions (buys and sales)
+
+                # Process transactions: buys (cost basis only) and sales (with tax)
                 if wallet and wallet.transactions:
                     for tx in wallet.transactions:
                         if tx.type_id not in holdings_type_ids:
                             continue
-                        # Filter by station
-                        if hasattr(tx, 'location_id') and tx.location_id != station_id:
+                        if tx.location_id != station_id:
                             continue
-                        
+                        if pnl.is_transaction_processed(tx.transaction_id, tx.type_id):
+                            continue
+
                         type_name = sde.get_type_name(tx.type_id) or f"Type {tx.type_id}"
-                        
+
                         if tx.is_buy:
+                            # No fee on fills — broker fee (if any) was recorded at
+                            # order placement; instant buys have no fee at all.
                             pnl.record_buy_fill(
                                 tx.transaction_id, tx.type_id, type_name,
-                                tx.quantity, tx.unit_price
+                                tx.quantity, tx.unit_price,
                             )
                         else:
+                            # Look up actual sales tax from journal
+                            tax = wallet.get_sales_tax_for_transaction(tx.journal_ref_id)
+
+                            if tax <= 0:
+                                age_days = (now - tx.date).days
+                                if age_days < JOURNAL_AGE_LIMIT_DAYS:
+                                    continue
+                                tax = calculate_sales_tax(tx.unit_price, tx.quantity, skills)
+                                print(f"[PnL-{hub_key}] Tx {tx.transaction_id} age={age_days}d — "
+                                      f"journal entry gone, using estimate tax {tax:,.0f} ISK")
+
                             pnl.record_sale(
                                 tx.transaction_id, tx.type_id, type_name,
-                                tx.quantity, tx.unit_price
+                                tx.quantity, tx.unit_price, tax_amount=tax,
                             )
-                
+
                 # Refresh P&L display
                 panel.pnl_panel.refresh_display()
-                
+
             except Exception as e:
                 print(f"[StockMarket] P&L sync error for {hub_key}: {e}")
                 import traceback
