@@ -7,6 +7,7 @@ dedup is handled inside InventoryManager via transaction_id / order_id.
 Designed to run alongside the existing TradeTracker sync without interfering.
 """
 
+from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,15 +25,101 @@ def _ts(value) -> str:
 
 
 def _sales_tax_for(wallet, transaction) -> float:
-    """Find the transaction_tax journal entry matching a sell transaction."""
-    for entry in wallet.journal:
-        if entry.ref_type != "transaction_tax":
+    """Find the transaction_tax journal entry matching a sell transaction.
+
+    ESI no longer populates context_id on transaction_tax entries (as of
+    2026-05). We bridge via market_transaction, which still carries
+    context_id == transaction_id, and the transaction_tax entry id is
+    consistently market_transaction.entry_id + 1.
+    """
+    for mt in wallet.journal:
+        if mt.ref_type != "market_transaction":
             continue
-        if entry.context_id == transaction.transaction_id:
-            return abs(entry.amount)
-        if entry.entry_id == transaction.journal_ref_id:
-            return abs(entry.amount)
+        if mt.context_id != transaction.transaction_id:
+            continue
+        target_id = mt.entry_id + 1
+        for tax in wallet.journal:
+            if tax.entry_id == target_id and tax.ref_type == "transaction_tax":
+                print(f"[FeeDiag] sales_tax tx={transaction.transaction_id}: "
+                      f"BRIDGE via market_transaction id={mt.entry_id} -> "
+                      f"transaction_tax id={tax.entry_id} amount={abs(tax.amount)}")
+                return abs(tax.amount)
+        # market_transaction found but id+1 isn't a transaction_tax: user
+        # has 0% effective sales tax for this sale.
+        print(f"[FeeDiag] sales_tax tx={transaction.transaction_id}: "
+              f"market_transaction id={mt.entry_id} found but no "
+              f"transaction_tax at id+1 -> tax is 0")
+        return 0.0
+    # No market_transaction in journal (transaction outside journal window).
+    print(f"[FeeDiag] sales_tax tx={transaction.transaction_id}: "
+          f"no market_transaction match in journal -> 0 (likely out of window)")
     return 0.0
+
+
+def _backfill_missing_fees(inventory: "InventoryManager",
+                           wallet: "ESIWallet") -> dict:
+    """Recover broker fees / sales tax for entries created before the
+    ESI-context-id fix landed.
+
+    Idempotent: only acts on listings where stored broker_fee == 0 and on
+    sales where stored sales_tax == 0. If the journal has a match, the
+    listing / sale gets updated AND the entry-level totals get adjusted
+    so the Summary panel reconciles.
+    """
+    results = {"listing_fees_backfilled": 0, "sales_tax_backfilled": 0}
+    if wallet is None:
+        return results
+
+    dirty = False
+    for entry in inventory.entries.values():
+        # --- Broker fees on active listings ---
+        for listing in entry.active_listings:
+            if listing.broker_fee > 0:
+                continue
+            try:
+                issued = datetime.fromisoformat(
+                    listing.listed_at.replace("Z", "+00:00")
+                )
+            except (ValueError, TypeError, AttributeError):
+                continue
+            fee = wallet.get_broker_fee_for_order(listing.order_id, issued=issued)
+            if fee > 0:
+                listing.broker_fee = fee
+                entry.total_listing_fees += fee
+                results["listing_fees_backfilled"] += 1
+                dirty = True
+                print(f"[FeeDiag] BACKFILL listing order_id={listing.order_id} "
+                      f"({entry.type_name}): broker_fee 0 -> {fee}")
+
+        # --- Sales tax on recorded sales (bridge via market_transaction) ---
+        for sale in entry.sales:
+            if sale.sales_tax > 0:
+                continue
+            tax_amt = 0.0
+            for mt in wallet.journal:
+                if mt.ref_type != "market_transaction":
+                    continue
+                if mt.context_id != sale.transaction_id:
+                    continue
+                for tx_tax in wallet.journal:
+                    if (tx_tax.entry_id == mt.entry_id + 1
+                            and tx_tax.ref_type == "transaction_tax"):
+                        tax_amt = abs(tx_tax.amount)
+                        break
+                break
+            if tax_amt > 0:
+                sale.sales_tax = tax_amt
+                entry.total_sales_tax += tax_amt
+                # record_sale credited profit without subtracting tax; fix now.
+                entry.total_realized_profit -= tax_amt
+                results["sales_tax_backfilled"] += 1
+                dirty = True
+                print(f"[FeeDiag] BACKFILL sale tx={sale.transaction_id} "
+                      f"({entry.type_name}): sales_tax 0 -> {tax_amt}")
+
+    if dirty:
+        inventory.save()
+    return results
 
 
 def sync_inventory_from_wallet(inventory: "InventoryManager",
@@ -48,6 +135,7 @@ def sync_inventory_from_wallet(inventory: "InventoryManager",
       4. Retire orders that vanished from active list (look up final state)
       5. Capture broker fees for fulfilled orders we never saw active
          (actual fee from journal if present, else estimate from price * rate)
+      6. Backfill missing fees on pre-fix listings/sales (idempotent)
 
     broker_fee_rate is a decimal fraction (e.g. 0.0148 for 1.48%); used only
     when journal lookup fails. Pass 0 to disable estimation.
@@ -60,6 +148,8 @@ def sync_inventory_from_wallet(inventory: "InventoryManager",
         "listings_updated": 0,
         "relists_recorded": 0,
         "orders_retired": 0,
+        "listing_fees_backfilled": 0,
+        "sales_tax_backfilled": 0,
     }
 
     if wallet is None:
@@ -105,9 +195,15 @@ def sync_inventory_from_wallet(inventory: "InventoryManager",
 
         # Broker fee is only meaningful when first creating the listing record.
         # On updates, add_or_update_listing ignores it (early-returns before adding to fees).
+        # The backfill step at the end handles existing listings whose fees
+        # weren't captured.
         broker_fee = 0.0
         if existing is None:
-            broker_fee = wallet.get_broker_fee_for_order(order.order_id) or 0.0
+            broker_fee = wallet.get_broker_fee_for_order(
+                order.order_id, issued=order.issued
+            ) or 0.0
+            print(f"[FeeDiag] new listing order_id={order.order_id} "
+                  f"type_id={order.type_id}: broker_fee resolved to {broker_fee}")
 
         _, listing, was_new = inventory.add_or_update_listing(
             type_id=order.type_id,
@@ -195,12 +291,18 @@ def sync_inventory_from_wallet(inventory: "InventoryManager",
         if any(a.order_id == order_id for a in entry.active_listings):
             continue
 
-        actual = wallet.get_broker_fee_for_order(order_id)
+        actual = wallet.get_broker_fee_for_order(order_id, issued=hist.issued)
         if actual > 0:
             fee = actual
+            print(f"[FeeDiag] orphan order {order_id}: JOURNAL fee = {fee}")
         elif broker_fee_rate > 0 and hist.price > 0 and hist.volume_total > 0:
             fee = hist.price * hist.volume_total * broker_fee_rate
+            print(f"[FeeDiag] orphan order {order_id}: ESTIMATED fee = {fee} "
+                  f"(price={hist.price} qty={hist.volume_total} "
+                  f"rate={broker_fee_rate}) -- journal lookup returned 0")
         else:
+            print(f"[FeeDiag] orphan order {order_id}: SKIPPED "
+                  f"(journal=0, rate={broker_fee_rate})")
             continue
 
         inventory.record_orphan_listing(
@@ -208,5 +310,10 @@ def sync_inventory_from_wallet(inventory: "InventoryManager",
             broker_fee=fee, state="fulfilled",
         )
         results["orphan_fees_captured"] += 1
+
+    # 6. Backfill missing fees on pre-fix data (idempotent).
+    backfill = _backfill_missing_fees(inventory, wallet)
+    results["listing_fees_backfilled"] = backfill["listing_fees_backfilled"]
+    results["sales_tax_backfilled"] = backfill["sales_tax_backfilled"]
 
     return results

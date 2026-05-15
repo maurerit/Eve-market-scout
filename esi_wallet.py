@@ -192,32 +192,69 @@ class ESIWallet:
         """
         Fetch wallet journal entries.
         Includes broker fees, sales tax, market escrow, etc.
+
+        On the first call (page=1) we walk every page returned by ESI's
+        X-Pages header. Multi-page coverage is required because date-proximity
+        matching for broker fees needs to reach entries that may not be on
+        page 1 if the user trades heavily.
         """
         char_id = self.auth.character_id
         if not char_id:
             return []
 
-        params = {"datasource": "tranquility", "page": page}
-        data = self._make_request(f"/characters/{char_id}/wallet/journal/", params)
-        
-        if data is not None:
-            if page == 1:
-                self.journal = []
-            
-            for j in data:
-                self.journal.append(JournalEntry(
-                    entry_id=j["id"],
-                    date=datetime.fromisoformat(j["date"].replace("Z", "+00:00")),
-                    ref_type=j.get("ref_type", ""),
-                    amount=j.get("amount", 0),
-                    balance=j.get("balance", 0),
-                    description=j.get("description", ""),
-                    context_id=j.get("context_id"),
-                    context_type=j.get("context_id_type")
-                ))
-            
+        headers = self.auth.get_auth_headers()
+        if not headers:
+            return self.journal
+
+        # Single-page fetch via raw request so we can read X-Pages.
+        try:
+            response = requests.get(
+                f"{BASE_URL}/characters/{char_id}/wallet/journal/",
+                headers=headers,
+                params={"datasource": "tranquility", "page": page},
+                timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except requests.RequestException as e:
+            print(f"[FeeDiag] journal page={page} fetch error: {e}")
+            return self.journal
+
+        if page == 1:
+            self.journal = []
+            total_pages = int(response.headers.get("X-Pages", "1"))
+            print(f"[FeeDiag] journal X-Pages={total_pages} (will fetch all)")
+        else:
+            total_pages = None  # Only set on the first page
+
+        for j in data:
+            self.journal.append(JournalEntry(
+                entry_id=j["id"],
+                date=datetime.fromisoformat(j["date"].replace("Z", "+00:00")),
+                ref_type=j.get("ref_type", ""),
+                amount=j.get("amount", 0),
+                balance=j.get("balance", 0),
+                description=j.get("description", ""),
+                context_id=j.get("context_id"),
+                context_type=j.get("context_id_type")
+            ))
+
+        # On the first call, recursively fetch remaining pages before sort/diag.
+        if page == 1 and total_pages and total_pages > 1:
+            for p in range(2, total_pages + 1):
+                self.fetch_journal(page=p)
+
+        # Sort + summary only on the outermost call (page=1).
+        if page == 1:
             self.journal.sort(key=lambda x: x.date, reverse=True)
-        
+
+            # === FEE DIAGNOSTIC (temp) ===
+            ref_counts = {}
+            for je in self.journal:
+                ref_counts[je.ref_type] = ref_counts.get(je.ref_type, 0) + 1
+            print(f"[FeeDiag] journal full fetch: {len(self.journal)} entries; "
+                  f"ref_type counts: {ref_counts}")
+
         return self.journal
 
     def fetch_orders(self) -> List[MarketOrder]:
@@ -338,22 +375,50 @@ class ESIWallet:
 
     # === Analysis helpers ===
 
-    def get_broker_fee_for_order(self, order_id: int) -> float:
-        """Find the original placement broker fee for an order.
+    def get_broker_fee_for_order(self, order_id: int,
+                                  issued: Optional[datetime] = None,
+                                  tolerance_seconds: float = 5.0) -> float:
+        """Find the placement broker fee for an order.
 
-        The wallet journal is stored newest-first (see fetch_journal). The
-        placement fee is the OLDEST brokers_fee entry for the order; later
-        entries are relist fees. Sort matching entries by date ascending so
-        we always return the placement fee.
+        ESI removed context_id from brokers_fee entries (as of 2026-05), so
+        the old `entry.context_id == order_id` match no longer works. We
+        match by date proximity to `order.issued` -- the broker fee is
+        debited at the same instant the order is placed, so timestamps line
+        up within ~1s.
+
+        If `issued` is None, falls back to the legacy context_id match
+        (still works for ancient journal entries that retain context_id).
         """
-        matches = [
-            e for e in self.journal
-            if e.ref_type == "brokers_fee" and e.context_id == order_id
-        ]
-        if not matches:
+        # Legacy fallback: try context_id first if no date hint is given.
+        if issued is None:
+            matches = [
+                e for e in self.journal
+                if e.ref_type == "brokers_fee" and e.context_id == order_id
+            ]
+            if matches:
+                matches.sort(key=lambda e: e.date)
+                return abs(matches[0].amount)
             return 0
-        matches.sort(key=lambda e: e.date)
-        return abs(matches[0].amount)
+
+        # Date-proximity match.
+        candidates = []
+        for e in self.journal:
+            if e.ref_type != "brokers_fee":
+                continue
+            delta = abs((e.date - issued).total_seconds())
+            if delta <= tolerance_seconds:
+                candidates.append((delta, e))
+        if not candidates:
+            print(f"[FeeDiag] get_broker_fee_for_order({order_id}) "
+                  f"issued={issued.isoformat()}: NO brokers_fee within "
+                  f"±{tolerance_seconds}s")
+            return 0
+        candidates.sort(key=lambda t: t[0])
+        delta, best = candidates[0]
+        print(f"[FeeDiag] get_broker_fee_for_order({order_id}) "
+              f"issued={issued.isoformat()}: DATE match Δ={delta:.2f}s "
+              f"amount={abs(best.amount)} ({len(candidates)} candidate(s))")
+        return abs(best.amount)
 
     def get_sales_tax_for_transaction(self, journal_ref_id: int) -> float:
         """Find the sales tax for a transaction via its journal reference."""
