@@ -36,7 +36,8 @@ def _sales_tax_for(wallet, transaction) -> float:
 
 
 def sync_inventory_from_wallet(inventory: "InventoryManager",
-                               wallet: Optional["ESIWallet"]) -> dict:
+                               wallet: Optional["ESIWallet"],
+                               broker_fee_rate: float = 0.0) -> dict:
     """Sync ESI wallet data into scanner inventory.
 
     Only processes transactions/orders for type_ids that already have an
@@ -45,10 +46,16 @@ def sync_inventory_from_wallet(inventory: "InventoryManager",
       2. Active sell orders (add/update + relist detection)
       3. Sales (FIFO-matched against lots from step 1)
       4. Retire orders that vanished from active list (look up final state)
+      5. Capture broker fees for fulfilled orders we never saw active
+         (actual fee from journal if present, else estimate from price * rate)
+
+    broker_fee_rate is a decimal fraction (e.g. 0.0148 for 1.48%); used only
+    when journal lookup fails. Pass 0 to disable estimation.
     """
     results = {
         "buys_recorded": 0,
         "sales_recorded": 0,
+        "orphan_fees_captured": 0,
         "listings_added": 0,
         "listings_updated": 0,
         "relists_recorded": 0,
@@ -168,5 +175,38 @@ def sync_inventory_from_wallet(inventory: "InventoryManager",
                     break
             inventory.retire_listing(type_id, listing.order_id, state)
             results["orders_retired"] += 1
+
+    # 5. Catch fulfilled orders we never observed active.
+    # If a listing was placed and fulfilled entirely between two syncs we
+    # never got to capture its broker fee. order_history retains the order
+    # past its active life. Try the real fee from the journal first; if that
+    # entry has aged out of the journal window, estimate from price * rate.
+    for hist in wallet.order_history:
+        if hist.is_buy_order:
+            continue
+        if hist.type_id not in tracked_type_ids:
+            continue
+        if hist.state != "fulfilled":
+            continue
+        entry = inventory.entries[hist.type_id]
+        order_id = hist.order_id
+        if str(order_id) in entry.retired_listings:
+            continue
+        if any(a.order_id == order_id for a in entry.active_listings):
+            continue
+
+        actual = wallet.get_broker_fee_for_order(order_id)
+        if actual > 0:
+            fee = actual
+        elif broker_fee_rate > 0 and hist.price > 0 and hist.volume_total > 0:
+            fee = hist.price * hist.volume_total * broker_fee_rate
+        else:
+            continue
+
+        inventory.record_orphan_listing(
+            type_id=hist.type_id, order_id=order_id,
+            broker_fee=fee, state="fulfilled",
+        )
+        results["orphan_fees_captured"] += 1
 
     return results

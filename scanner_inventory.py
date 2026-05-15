@@ -429,6 +429,28 @@ class InventoryManager:
                 return listing
         return None
 
+    def record_orphan_listing(self, type_id: int, order_id: int,
+                              broker_fee: float, state: str = "fulfilled"
+                              ) -> Optional[InventoryEntry]:
+        """Record a listing whose lifecycle finished before sync observed it.
+
+        When a listing is placed and fulfilled entirely between two syncs we
+        never get to capture its broker fee via the active-orders path. The
+        sync layer calls this with either the actual fee (looked up in the
+        journal) or an estimated fee (sale_price * rate) so total_listing_fees
+        stays accurate. Marks the order as retired so re-processing is a no-op.
+        """
+        entry = self.entries.get(type_id)
+        if entry is None:
+            return None
+        if str(order_id) in entry.retired_listings:
+            return entry
+        entry.total_listing_fees += broker_fee
+        entry.retired_listings[str(order_id)] = state
+        entry.last_activity_at = datetime.now().isoformat()
+        self._save()
+        return entry
+
     def retire_listing(self, type_id: int, order_id: int, reason: str) -> Optional[InventoryEntry]:
         """Remove an order from active_listings and remember its fate.
 

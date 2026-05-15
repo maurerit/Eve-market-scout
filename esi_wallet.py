@@ -339,11 +339,21 @@ class ESIWallet:
     # === Analysis helpers ===
 
     def get_broker_fee_for_order(self, order_id: int) -> float:
-        """Find the broker fee journal entry for an order."""
-        for entry in self.journal:
-            if entry.ref_type == "brokers_fee" and entry.context_id == order_id:
-                return abs(entry.amount)
-        return 0
+        """Find the original placement broker fee for an order.
+
+        The wallet journal is stored newest-first (see fetch_journal). The
+        placement fee is the OLDEST brokers_fee entry for the order; later
+        entries are relist fees. Sort matching entries by date ascending so
+        we always return the placement fee.
+        """
+        matches = [
+            e for e in self.journal
+            if e.ref_type == "brokers_fee" and e.context_id == order_id
+        ]
+        if not matches:
+            return 0
+        matches.sort(key=lambda e: e.date)
+        return abs(matches[0].amount)
 
     def get_sales_tax_for_transaction(self, journal_ref_id: int) -> float:
         """Find the sales tax for a transaction via its journal reference."""
@@ -368,19 +378,17 @@ class ESIWallet:
         return result
 
     def get_relist_fees_for_order(self, order_id: int) -> tuple[float, int]:
+        """Find all modification (relist) fees for an order.
+
+        Journal is stored newest-first. Sort matching entries oldest-first
+        so the placement fee is index 0 and relist fees are index 1+.
+        Returns (total_relist_fees, relist_count).
         """
-        Find all modification fees for an order.
-        Returns (total_fees, modification_count).
-        """
-        total = 0
-        count = 0
-        for entry in self.journal:
-            # Relist fees show as brokers_fee with the order as context
-            # but after the initial placement
-            if entry.ref_type == "brokers_fee" and entry.context_id == order_id:
-                # First one is placement, rest are relists
-                if count > 0:
-                    total += abs(entry.amount)
-                count += 1
-        
-        return (total, max(0, count - 1))  # Subtract 1 for initial placement
+        matches = [
+            e for e in self.journal
+            if e.ref_type == "brokers_fee" and e.context_id == order_id
+        ]
+        matches.sort(key=lambda e: e.date)
+        # matches[0] is placement; matches[1:] are relists
+        total = sum(abs(e.amount) for e in matches[1:])
+        return (total, max(0, len(matches) - 1))

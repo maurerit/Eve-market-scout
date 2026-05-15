@@ -476,7 +476,13 @@ class TrackingTabManager:
         against the resulting active listings.
         """
         try:
-            results = sync_inventory_from_wallet(self.inventory, self.wallet)
+            from calculate import get_broker_fee_rate
+            # get_broker_fee_rate returns a percentage (e.g. 1.48); convert to
+            # decimal fraction for the orphan-fee estimator.
+            rate = get_broker_fee_rate(self.skills) / 100.0
+            results = sync_inventory_from_wallet(
+                self.inventory, self.wallet, broker_fee_rate=rate
+            )
             if any(results.values()):
                 print(f"[ScannerInventory] sync: {results}")
         except Exception as e:
