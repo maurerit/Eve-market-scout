@@ -8,17 +8,12 @@ from typing import Callable, Optional
 from esi_auth import ESIAuth
 from esi_wallet import ESIWallet
 from esi_skills import ESISkills, ESIStandings
-from trade_tracker import TradeTracker, TrackedTrade
+from trade_tracker import TradeTracker
+from scanner_inventory import InventoryManager
+from scanner_inventory_sync import sync_inventory_from_wallet
 from calculate import (
     TradingSkills, DEFAULT_SKILLS, format_isk, get_skill_summary,
     load_cached_skills
-)
-from calculate_trades import calculate_trade_fees, calculate_trade_break_even
-
-# Import dialog classes
-from gui_tracking_dialogs import (
-    RecordBuyDialog, RecordListingDialog,
-    RecordRelistDialog, RecordSaleDialog, TradeDetailsDialog
 )
 
 # Import sync manager
@@ -33,19 +28,19 @@ from underbid_monitor import UnderbidMonitor
 from tk_queue import submit
 
 
-# Column configuration for trades treeview
-TRADE_COLUMNS = ("item", "status", "qty", "buy", "sell", "profit", "break_even", "fees")
+# Column configuration for inventory treeview (Step 3 swap from per-deal to per-item).
+TRADE_COLUMNS = ("item", "status", "held", "listed", "avg_buy", "list_price", "profit", "fees")
 TRADE_COL_TITLES = {
     "item": "Item",
     "status": "Status",
-    "qty": "Qty",
-    "buy": "Buy Price",
-    "sell": "Sell Price",
+    "held": "Held",
+    "listed": "Listed",
+    "avg_buy": "Avg Buy",
+    "list_price": "List Price",
     "profit": "Profit",
-    "break_even": "Break Even",
     "fees": "Total Fees"
 }
-TRADE_NUMERIC_COLS = {"qty", "buy", "sell", "profit", "break_even", "fees"}
+TRADE_NUMERIC_COLS = {"held", "listed", "avg_buy", "list_price", "profit", "fees"}
 
 
 class TrackingTabManager:
@@ -75,12 +70,22 @@ class TrackingTabManager:
         
         # Trade tracker (with skills for accurate fee calcs)
         self.tracker = TradeTracker(self.skills)
-        
+
+        # Scanner inventory (per-hub FIFO tracker -- Step 3 UI now reads this).
+        self.inventory = InventoryManager(self.selected_hub)
+
+        # One-time backfill: legacy TradeTracker pending/listed/sold trades
+        # predate the inventory system. Flag any missing type_ids so they
+        # appear in the new view and pick up ESI data on next sync.
+        self._backfill_inventory_from_tracker()
+
         # Sync manager
         self.sync_manager = ESISyncManager(self.tracker, set_status)
-        
-        # Underbid monitoring
+
+        # Underbid monitoring -- now keyed by type_id, fed by inventory listings
+        # in _on_esi_refresh. Seed ignored set from persisted entry flags.
         self.underbid_monitor = UnderbidMonitor()
+        self.underbid_monitor.seed_ignored_from_inventory(self.inventory.all_entries())
         
         # Stock market tab reference (set by gui_main after creation)
         self.stock_market_tab = None
@@ -371,7 +376,7 @@ class TrackingTabManager:
         filter_frame.pack(fill=tk.X, pady=(0, 5))
         
         self.filter_var = tk.StringVar(value="active")
-        filters = [("Active", "active"), ("Sold", "sold"), ("All", "all")]
+        filters = [("Active", "active"), ("All", "all")]
         for text, value in filters:
             ttk.Radiobutton(
                 filter_frame, text=text, value=value,
@@ -393,13 +398,13 @@ class TrackingTabManager:
                 )
             )
         
-        self.trades_tree.column("item", width=180)
+        self.trades_tree.column("item", width=200)
         self.trades_tree.column("status", width=70, anchor=tk.CENTER)
-        self.trades_tree.column("qty", width=50, anchor=tk.E)
-        self.trades_tree.column("buy", width=90, anchor=tk.E)
-        self.trades_tree.column("sell", width=90, anchor=tk.E)
+        self.trades_tree.column("held", width=55, anchor=tk.E)
+        self.trades_tree.column("listed", width=55, anchor=tk.E)
+        self.trades_tree.column("avg_buy", width=90, anchor=tk.E)
+        self.trades_tree.column("list_price", width=90, anchor=tk.E)
         self.trades_tree.column("profit", width=90, anchor=tk.E)
-        self.trades_tree.column("break_even", width=90, anchor=tk.E)
         self.trades_tree.column("fees", width=80, anchor=tk.E)
         
         # Scrollbar
@@ -424,23 +429,14 @@ class TrackingTabManager:
         self.trades_tree.bind("<Double-1>", self._show_trade_details)
 
     def _create_context_menu(self, parent):
-        """Create right-click context menu for trades tree."""
+        """Create right-click context menu for the inventory tree."""
         self.context_menu = tk.Menu(parent, tearoff=0)
         self.context_menu.add_command(label="View Details", command=lambda: self._show_trade_details(None))
-        self.context_menu.add_separator()
-        
-        manual_menu = tk.Menu(self.context_menu, tearoff=0)
-        manual_menu.add_command(label="Record Buy", command=self._record_buy)
-        manual_menu.add_command(label="Record Listing", command=self._record_listing)
-        manual_menu.add_command(label="Record Relist", command=self._record_relist)
-        manual_menu.add_command(label="Record Sale", command=self._record_sale)
-        self.context_menu.add_cascade(label="Manual Record...", menu=manual_menu)
-        
         self.context_menu.add_separator()
         self.context_menu.add_command(label="Ignore Underbid", command=self._ignore_underbid)
         self.context_menu.add_command(label="Add to Stock Market", command=self._add_to_stock_market)
         self.context_menu.add_separator()
-        self.context_menu.add_command(label="Delete Trade", command=self._delete_trade)
+        self.context_menu.add_command(label="Delete Entry", command=self._delete_trade)
 
     def _show_context_menu(self, event):
         """Show context menu at click position."""
@@ -450,35 +446,67 @@ class TrackingTabManager:
             self.context_menu.post(event.x_root, event.y_root)
 
     def _add_to_stock_market(self):
-        """Add selected item to stock market portfolio."""
-        selection = self.trades_tree.selection()
-        if not selection:
+        """Add selected inventory entry's item to stock market portfolio."""
+        entry = self._get_selected_entry()
+        if not entry:
             return
-        
-        trade_id = selection[0]
-        trade = self.tracker.get_trade(trade_id)
-        if not trade:
-            return
-        
+
         if self.stock_market_tab:
             from config import get_hub_config, DEFAULT_HUB
             hub_config = get_hub_config(self.selected_hub or DEFAULT_HUB)
-            
+
             self.stock_market_tab.add_item_from_external(
-                type_id=trade.type_id,
+                type_id=entry.type_id,
                 region_id=hub_config["region_id"],
                 station_id=hub_config["station_id"],
-                type_name=trade.type_name
+                type_name=entry.type_name
             )
 
     def _on_esi_refresh(self):
         """Called when ESI wallet data is refreshed.
-        
-        NOTE: Skills/standings refresh is now manual-only via the 
-        'Refresh Skills' button to avoid blocking the main thread.
+
+        Order matters: sync inventory from the fresh wallet first (so listings
+        reflect the latest volume_remain/price), then run the underbid check
+        against the resulting active listings.
         """
-        # Just refresh the display - wallet data already synced
+        try:
+            results = sync_inventory_from_wallet(self.inventory, self.wallet)
+            if any(results.values()):
+                print(f"[ScannerInventory] sync: {results}")
+        except Exception as e:
+            print(f"[ScannerInventory] sync error: {e}")
+
+        self._run_underbid_check()
         self._refresh_display()
+
+    def _run_underbid_check(self):
+        """Run the underbid check against inventory listings.
+
+        Uses the market_orders_cache populated by ESISyncManager.refresh_esi_data
+        (fetched once per refresh, regardless of underbid usage).
+        """
+        market_orders = getattr(self.sync_manager, "market_orders_cache", None)
+        if not market_orders:
+            return
+
+        # Pass the HIGHEST listing price per entry as your_price -- if that
+        # isn't underbid, none of the entry's lower listings are either.
+        listings = []
+        for entry in self.inventory.active_entries():
+            if not entry.active_listings:
+                continue
+            top_price = max(a.current_price for a in entry.active_listings)
+            listings.append((entry.type_id, top_price))
+
+        if not listings:
+            return
+
+        try:
+            self.underbid_monitor.check_underbids(
+                listings, market_orders, self.selected_hub
+            )
+        except Exception as e:
+            print(f"[Underbid] check error: {e}")
 
     def _on_standings_changed(self, station: float, faction: float):
         """Called when manual standing override is changed."""
@@ -648,68 +676,95 @@ class TrackingTabManager:
         self.swap_btn.configure(state=tk.NORMAL if can_swap else tk.DISABLED)
 
     def _refresh_display(self):
-        """Refresh the trades list and summary."""
-        all_trades = list(self.tracker.trades.values())
-        sold_trades = [t for t in all_trades if t.status == "sold"]
-        listed_trades = [t for t in all_trades if t.status == "listed"]
-        
-        # Update summary panel
+        """Refresh the inventory list and summary (Step 3: reads from inventory)."""
+        all_entries = self.inventory.all_entries()
+
+        # Update summary panel from inventory.
         wallet_balance = self.wallet.balance if self.wallet else 0
-        self.summary_panel.update(sold_trades, listed_trades, wallet_balance, self.skills)
-        
-        # Refresh trades list
+        self.summary_panel.update_from_inventory(all_entries, wallet_balance)
+
+        # Refresh treeview
         for item in self.trades_tree.get_children():
             self.trades_tree.delete(item)
-        
+
         filter_type = self.filter_var.get()
         if filter_type == "active":
-            trades = self.tracker.get_active_trades()
-        elif filter_type == "sold":
-            trades = self.tracker.get_by_status("sold")
+            entries = [e for e in all_entries if e.is_active]
         else:
-            trades = self.tracker.get_recent_trades()
-        
-        for trade in trades:
-            self._insert_trade(trade)
+            entries = all_entries
 
-    def _insert_trade(self, trade: TrackedTrade):
-        """Insert a trade into the treeview."""
-        fees = calculate_trade_fees(trade, self.skills)
-        be = calculate_trade_break_even(trade, self.skills)
-        
-        profit = trade.actual_profit
-        profit_str = format_isk(profit) if profit else "-"
-        
-        # Build tags list
-        tags = []
-        
-        if trade.status == "sold":
-            tags.append("profit" if profit and profit > 0 else "loss")
-        elif trade.status == "listed":
-            tags.append("active")
-            # Check for underbid (only for listed, non-ignored)
-            if not trade.ignore_underbid and self.underbid_monitor.is_underbid(trade.trade_id):
-                tags.append("underbid")
-        elif trade.status == "pending":
-            tags.append("flagged")
-        
-        self.trades_tree.insert("", tk.END, iid=trade.trade_id, values=(
-            trade.type_name,
-            trade.status.title(),
-            trade.buy_quantity or "-",
-            format_isk(trade.buy_price) if trade.buy_price else "-",
-            format_isk(trade.current_price) if trade.current_price else "-",
+        # Sort by type_name for a stable default order.
+        entries.sort(key=lambda e: e.type_name or "")
+        for entry in entries:
+            self._insert_inventory_entry(entry)
+
+    def _insert_inventory_entry(self, entry):
+        """Insert one InventoryEntry as a row."""
+        # Status derivation
+        if entry.active_listings:
+            status = "Listed"
+            tag = "active"
+        elif entry.quantity_held > 0:
+            status = "Held"
+            tag = "flagged"
+        elif entry.quantity_out > 0:
+            status = "Sold Out"
+            tag = "profit" if entry.total_realized_profit > 0 else "loss"
+        else:
+            status = "Flagged"
+            tag = "flagged"
+
+        # List price: highest current_price across active listings (or "-")
+        if entry.active_listings:
+            list_price = max(a.current_price for a in entry.active_listings)
+            list_price_str = format_isk(list_price)
+        else:
+            list_price_str = "-"
+
+        avg_buy_str = format_isk(entry.average_buy_price) if entry.quantity_in > 0 else "-"
+        held_str = str(entry.quantity_held) if entry.quantity_held else "-"
+        listed_str = str(entry.quantity_listed) if entry.quantity_listed else "-"
+
+        # Net profit for this entry = realized - listing-fee share
+        net_profit = entry.total_realized_profit
+        if entry.quantity_in > 0 and entry.total_listing_fees > 0:
+            share = entry.quantity_out / entry.quantity_in
+            net_profit -= entry.total_listing_fees * share
+        profit_str = format_isk(net_profit) if entry.quantity_out > 0 else "-"
+
+        total_fees = entry.total_listing_fees + entry.total_sales_tax
+        fees_str = format_isk(total_fees) if total_fees else "-"
+
+        tags = [tag]
+        # Underbid tag overrides if any listing is underbid and not ignored
+        if (entry.active_listings and not entry.ignore_underbid
+                and self.underbid_monitor.is_underbid(entry.type_id)):
+            tags.append("underbid")
+
+        self.trades_tree.insert("", tk.END, iid=f"inv-{entry.type_id}", values=(
+            entry.type_name,
+            status,
+            held_str,
+            listed_str,
+            avg_buy_str,
+            list_price_str,
             profit_str,
-            format_isk(be) if be else "-",
-            format_isk(fees) if fees else "-"
+            fees_str,
         ), tags=tuple(tags))
 
-    def _get_selected_trade(self) -> Optional[TrackedTrade]:
-        """Get currently selected trade."""
+    def _get_selected_entry(self):
+        """Return the selected InventoryEntry, or None."""
         selection = self.trades_tree.selection()
         if not selection:
             return None
-        return self.tracker.get_trade(selection[0])
+        iid = selection[0]
+        if not iid.startswith("inv-"):
+            return None
+        try:
+            type_id = int(iid[4:])
+        except ValueError:
+            return None
+        return self.inventory.get(type_id)
 
     # === Auth dialogs ===
 
@@ -858,96 +913,62 @@ class TrackingTabManager:
         """Toggle auto-refresh on/off."""
         self.sync_manager.toggle_auto_refresh(self.auto_refresh_var.get())
 
-    # === Trade recording dialogs ===
-
-    def _record_buy(self):
-        """Show dialog to manually record buy info."""
-        trade = self._get_selected_trade()
-        if not trade or trade.status != "pending":
-            messagebox.showinfo("Cannot Record", "Select a pending trade to record buy info.")
-            return
-        
-        def on_save(trade_id, price, qty):
-            self.tracker.update_buy_info(trade_id, price, qty)
-            self._refresh_display()
-        
-        RecordBuyDialog(self.frame, trade, on_save)
-
-    def _record_listing(self):
-        """Show dialog to manually record listing info."""
-        trade = self._get_selected_trade()
-        if not trade or trade.status != "pending":
-            messagebox.showinfo("Cannot Record", "Select a pending trade to record listing info.")
-            return
-        
-        def on_save(trade_id, price):
-            self.tracker.update_listing_info(trade_id, price)
-            self._refresh_display()
-        
-        RecordListingDialog(self.frame, trade, on_save)
-
-    def _record_relist(self):
-        """Show dialog to record a relist (price change)."""
-        trade = self._get_selected_trade()
-        if not trade or trade.status != "listed":
-            messagebox.showinfo("Cannot Record", "Select a listed trade to record relist.")
-            return
-        
-        def on_save(trade_id, new_price):
-            self.tracker.record_relist(trade_id, new_price, self.skills)
-            self._refresh_display()
-        
-        RecordRelistDialog(self.frame, trade, on_save)
-
-    def _record_sale(self):
-        """Show dialog to manually record sale."""
-        trade = self._get_selected_trade()
-        if not trade or trade.status not in ("pending", "listed"):
-            messagebox.showinfo("Cannot Record", "Select an active trade to record sale.")
-            return
-        
-        def on_save(trade_id, price, qty):
-            self.tracker.record_sale(trade_id, price, qty, self.skills)
-            self._refresh_display()
-        
-        RecordSaleDialog(self.frame, trade, on_save)
-
     def _delete_trade(self):
-        """Delete the selected trade."""
-        trade = self._get_selected_trade()
-        if trade:
-            if messagebox.askyesno("Delete Trade", f"Delete trade for {trade.type_name}?"):
-                self.underbid_monitor.clear_trade(trade.trade_id)
-                self.tracker.delete_trade(trade.trade_id)
-                self._refresh_display()
+        """Delete the selected inventory entry."""
+        entry = self._get_selected_entry()
+        if not entry:
+            return
+        if messagebox.askyesno("Delete Entry", f"Delete inventory entry for {entry.type_name}?"):
+            self.underbid_monitor.clear_type(entry.type_id)
+            self.inventory.delete_entry(entry.type_id)
+            self._refresh_display()
 
     def _ignore_underbid(self):
-        """Ignore underbid warning for the selected trade."""
-        trade = self._get_selected_trade()
-        if not trade:
+        """Suppress underbid warnings for the selected inventory entry."""
+        entry = self._get_selected_entry()
+        if not entry:
             return
-        
-        if trade.status != "listed":
-            messagebox.showinfo("Cannot Ignore", "Only listed trades can have underbid warnings.")
+        if not entry.active_listings:
+            messagebox.showinfo(
+                "Cannot Ignore",
+                "This item has no active listings to mark as ignored."
+            )
             return
-        
-        # Set ignore flag in tracker (persists to file)
-        self.tracker.set_ignore_underbid(trade.trade_id, True)
-        
-        # Also update monitor state
-        self.underbid_monitor.ignore_underbid(trade.trade_id)
-        
-        self.set_status(f"Ignoring underbid for {trade.type_name}")
+        self.inventory.set_ignore_underbid_for_type(entry.type_id, True)
+        self.underbid_monitor.ignore_underbid(entry.type_id)
+        self.set_status(f"Ignoring underbid for {entry.type_name}")
         self._refresh_display()
 
     def _show_trade_details(self, event):
-        """Show detailed trade info on double-click."""
-        trade = self._get_selected_trade()
-        if not trade:
+        """Show detailed inventory info on double-click."""
+        entry = self._get_selected_entry()
+        if not entry:
             return
-        
-        be_value = calculate_trade_break_even(trade, self.skills)
-        TradeDetailsDialog(self.frame, trade, be_value)
+
+        # Build a plain-text summary of the entry. Step 3 keeps this lightweight;
+        # a richer dialog can come later.
+        lines = [
+            f"Item: {entry.type_name}  (type_id {entry.type_id})",
+            "",
+            f"Quantity in: {entry.quantity_in}",
+            f"Quantity out: {entry.quantity_out}",
+            f"Held: {entry.quantity_held}  (in hangar {entry.quantity_in_hangar}, listed {entry.quantity_listed})",
+            "",
+            f"Avg buy price: {format_isk(entry.average_buy_price)}",
+            f"Avg sell price: {format_isk(entry.average_sell_price)}",
+            f"Remaining cost basis: {format_isk(entry.remaining_cost_basis)}",
+            "",
+            f"Total revenue: {format_isk(entry.total_revenue)}",
+            f"Total buy cost: {format_isk(entry.total_buy_cost)}",
+            f"Total sales tax: {format_isk(entry.total_sales_tax)}",
+            f"Total listing fees: {format_isk(entry.total_listing_fees)}",
+            f"Realized profit (gross): {format_isk(entry.total_realized_profit)}",
+            "",
+            f"Active listings: {len(entry.active_listings)}",
+            f"Buy lots: {len(entry.buy_lots)}",
+            f"Sales: {len(entry.sales)}",
+        ]
+        messagebox.showinfo(f"Inventory: {entry.type_name}", "\n".join(lines))
 
     # === Public API for integration with deals tab ===
 
@@ -960,6 +981,16 @@ class TrackingTabManager:
             projected_buy=buy_price,
             projected_sell=sell_price,
             projected_profit=profit_per_unit
+        )
+
+        # Parallel: register in scanner inventory (Step 2 -- populated only;
+        # not yet read by UI). Lot/listing data is filled by ESI sync.
+        self.inventory.flag_from_scanner(
+            type_id=type_id,
+            type_name=type_name,
+            projected_buy=buy_price,
+            projected_sell=sell_price,
+            projected_profit_per_unit=profit_per_unit,
         )
         
         # Backfill from ESI if wallet data available
@@ -991,7 +1022,34 @@ class TrackingTabManager:
         """Get ESIStandings instance for hub-specific standings lookups."""
         return self.esi_standings
     
+    def _backfill_inventory_from_tracker(self):
+        """Copy legacy TradeTracker trades into InventoryManager (idempotent).
+
+        For each TrackedTrade whose type_id has no InventoryEntry yet, call
+        flag_from_scanner so the next ESI sync can populate buy lots and
+        listings. Safe to call repeatedly -- flag_from_scanner only updates
+        projections on an existing entry.
+        """
+        added = 0
+        for trade in self.tracker.trades.values():
+            if trade.type_id in self.inventory.entries:
+                continue
+            self.inventory.flag_from_scanner(
+                type_id=trade.type_id,
+                type_name=trade.type_name,
+                projected_buy=trade.projected_buy_price or 0,
+                projected_sell=trade.projected_sell_price or 0,
+                projected_profit_per_unit=trade.projected_profit or 0,
+            )
+            added += 1
+        if added:
+            print(f"[ScannerInventory] backfilled {added} entries from TradeTracker")
+
     def set_hub(self, hub_key: str):
         """Update the selected hub for underbid monitoring."""
         self.selected_hub = hub_key
         self.sync_manager.set_underbid_monitor(self.underbid_monitor, hub_key)
+        self.inventory.set_hub(hub_key)
+        # Hub switch -> different inventory file loaded -> re-run backfill
+        # against the new hub's inventory.
+        self._backfill_inventory_from_tracker()

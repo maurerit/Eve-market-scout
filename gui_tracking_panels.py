@@ -11,6 +11,36 @@ from calculate import (
 from calculate_trades import calculate_trade_fees, get_profit_trends
 
 
+def _trends_from_inventory(entries) -> dict:
+    """Compute day/week/month/year profit trends from InventoryEntry sales.
+
+    Realized profit per sale = sell_price * quantity - cost_basis - sales_tax.
+    Sale timestamp comes from SaleRecord.sold_at (ISO string).
+    """
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    cutoffs = {
+        "day": now - timedelta(days=1),
+        "week": now - timedelta(days=7),
+        "month": now - timedelta(days=30),
+        "year": now - timedelta(days=365),
+    }
+    totals = {k: 0.0 for k in cutoffs}
+    for entry in entries:
+        for sale in entry.sales:
+            try:
+                sold = datetime.fromisoformat(sale.sold_at)
+                if sold.tzinfo is None:
+                    sold = sold.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+            profit = (sale.sell_price * sale.quantity) - sale.cost_basis - sale.sales_tax
+            for period, cutoff in cutoffs.items():
+                if sold >= cutoff:
+                    totals[period] += profit
+    return totals
+
+
 class SummaryPanel:
     """Left panel showing wallet balance, totals, and profit trends."""
     
@@ -74,7 +104,50 @@ class SummaryPanel:
             label.pack(side=tk.RIGHT)
             setattr(self, attr, label)
     
-    def update(self, sold_trades: List, listed_trades: List, 
+    def update_from_inventory(self, entries: List, wallet_balance: float):
+        """Update summary values from scanner InventoryEntry objects.
+
+        Args:
+            entries: List of InventoryEntry (all of them, not just active)
+            wallet_balance: Current wallet balance (0 if unavailable)
+        """
+        total_revenue = sum(e.total_revenue for e in entries)
+        total_buy_cost = sum(e.total_buy_cost for e in entries)
+        total_fees = sum(e.total_listing_fees + e.total_sales_tax for e in entries)
+        # Net profit = realized profit summed across entries, minus listing fees
+        # proportionally apportioned to sold quantity (mirrors get_summary).
+        net_profit = sum(e.total_realized_profit for e in entries)
+        for e in entries:
+            if e.quantity_in > 0 and e.total_listing_fees > 0:
+                share = e.quantity_out / e.quantity_in
+                net_profit -= e.total_listing_fees * share
+
+        total_expenses = total_buy_cost + total_fees
+
+        if wallet_balance > 0:
+            self.balance_label.configure(text=format_isk(wallet_balance) + " ISK")
+
+        self.revenue_label.configure(text=format_isk(total_revenue, short=True))
+        self.expenses_label.configure(text=format_isk(total_expenses, short=True))
+        self.fees_label.configure(text=format_isk(total_fees, short=True))
+
+        self.profit_label.configure(
+            text=format_isk(net_profit, short=True),
+            foreground="#006400" if net_profit >= 0 else "#8B0000"
+        )
+
+        # Profit trends from inventory sales (ISO timestamp + profit per sale).
+        trends = _trends_from_inventory(entries)
+        for period, attr in [("day", "trend_day_label"), ("week", "trend_week_label"),
+                             ("month", "trend_month_label"), ("year", "trend_year_label")]:
+            value = trends[period]
+            label = getattr(self, attr)
+            label.configure(
+                text=format_isk(value, short=True),
+                foreground="#006400" if value >= 0 else "#8B0000"
+            )
+
+    def update(self, sold_trades: List, listed_trades: List,
                wallet_balance: float, skills: TradingSkills):
         """
         Update all summary values.

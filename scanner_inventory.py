@@ -106,6 +106,9 @@ class InventoryEntry:
     flagged_at: Optional[str] = None  # First time this item was added
     last_activity_at: Optional[str] = None
     notes: str = ""
+    # Persistent "ignore underbid warnings for this item" flag.
+    # Mirrors the per-listing ignore_underbid on ActiveListing but at item scope.
+    ignore_underbid: bool = False
 
     # Projected from scanner (for vs-actual comparison)
     projected_buy_price: float = 0
@@ -442,6 +445,15 @@ class InventoryManager:
         entry.last_activity_at = datetime.now().isoformat()
         self._save()
         return entry
+
+    def set_ignore_underbid_for_type(self, type_id: int, ignore: bool) -> bool:
+        """Set item-level ignore_underbid flag (persists)."""
+        entry = self.entries.get(type_id)
+        if entry is None:
+            return False
+        entry.ignore_underbid = ignore
+        self._save()
+        return True
 
     def set_ignore_underbid(self, type_id: int, order_id: int, ignore: bool) -> bool:
         entry = self.entries.get(type_id)

@@ -182,6 +182,7 @@ class WatchlistTabManager:
         self.context_menu.add_command(label="Copy (Ctrl+C)", command=self._copy_selected)
         self.context_menu.add_command(label="Paste (Ctrl+V)", command=self._paste_items)
         self.context_menu.add_separator()
+        self.context_menu.add_command(label="Show Price History", command=self._show_price_history)
         self.context_menu.add_command(label="Add to Stock Market", command=self._add_to_stock_market)
 
         self.tree.bind("<Button-3>", self._show_context_menu)
@@ -382,6 +383,28 @@ class WatchlistTabManager:
             return float(s)
         except ValueError:
             return None
+
+    def _show_price_history(self):
+        """Show price history graph for the selected watchlist item."""
+        type_id = self._get_selected_type_id()
+        if type_id is None or type_id not in self.watchlist:
+            return
+
+        item = self.watchlist[type_id]
+
+        region_id = self.region_id
+        if not region_id:
+            from config import get_hub_config, DEFAULT_HUB
+            region_id = get_hub_config(DEFAULT_HUB)["region_id"]
+
+        from graphing import show_price_graph
+        show_price_graph(
+            parent=self.frame,
+            type_id=type_id,
+            type_name=item.name,
+            region_id=region_id,
+            profiles=None,
+        )
 
     def _add_to_stock_market(self):
         """Add selected item to stock market portfolio."""

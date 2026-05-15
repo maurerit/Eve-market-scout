@@ -187,7 +187,13 @@ class CrossHubDisplayManager:
                         if child.selection():
                             deal = self._get_selected_deal(child)
                             if deal and self.tracking_manager:
-                                self.tracking_manager.add_trade_from_deal(deal)
+                                self.tracking_manager.flag_deal(
+                                    type_id=deal.type_id,
+                                    type_name=deal.name,
+                                    buy_price=deal.buy_price,
+                                    sell_price=deal.ceiling_price,
+                                    profit_per_unit=deal.net_profit,
+                                )
                                 self.set_status(f"Now tracking: {deal.name}")
                             return
 

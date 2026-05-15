@@ -232,25 +232,16 @@ class ESISyncManager:
                 matching_buys = [tx for tx in self.wallet.transactions if tx.type_id == t.type_id and tx.is_buy]
                 print(f"  {t.type_name}: {len(matching_buys)} buy transaction(s)")
             
-            # Fetch market orders for underbid checking
-            underbid_results = {}
-            if self.underbid_monitor and self.hub_key:
+            # Fetch market orders so _on_esi_refresh can run the underbid check
+            # against inventory listings (the underbid check itself moved out of
+            # this thread when the UI swapped from TradeTracker to InventoryManager).
+            if self.hub_key:
                 hub_config = TRADE_HUBS.get(self.hub_key)
                 if hub_config:
                     region_id = hub_config["region_id"]
-                    print(f"Fetching market orders for underbid check ({self.hub_key})...")
+                    print(f"Fetching market orders ({self.hub_key})...")
                     self.market_orders_cache = fetch_market_orders_sync(region_id)
                     print(f"  Got {len(self.market_orders_cache)} orders")
-                    
-                    # Check underbids for listed trades
-                    listed_trades = [t for t in self.tracker.trades.values() if t.status == "listed"]
-                    if listed_trades:
-                        underbid_results = self.underbid_monitor.check_underbids(
-                            listed_trades,
-                            self.market_orders_cache,
-                            self.hub_key
-                        )
-                        print(f"  Found {len(underbid_results)} underbid(s)")
             
             def update():
                 self.is_refreshing = False
@@ -293,9 +284,7 @@ class ESISyncManager:
                         status_parts.append(f"{sync_results['relists_detected']} relist(s)")
                     if sync_results["sales_detected"]:
                         status_parts.append(f"{sync_results['sales_detected']} sale(s)")
-                    if underbid_results:
-                        status_parts.append(f"{len(underbid_results)} underbid(s)")
-                    
+
                     self.set_status(" | ".join(status_parts))
                 else:
                     self.set_status("ESI refresh failed")
