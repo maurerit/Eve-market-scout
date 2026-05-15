@@ -59,6 +59,9 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         # Hub panels
         self.hub_panels: Dict[str, StockMarketHubPanel] = {}
         self._active_hub_key: Optional[str] = None
+        # Last ESI-freshen timestamp per hub_key for holdings history.
+        # Debounce repeated tab switches within _HOLDINGS_FRESHEN_MIN_INTERVAL.
+        self._holdings_freshen_ts: Dict[str, datetime] = {}
         
         # Create main frame
         self.frame = ttk.Frame(notebook)
@@ -217,6 +220,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
             except Exception:
                 pass
 
+    _HOLDINGS_FRESHEN_MIN_INTERVAL = 60  # seconds; rapid tab-switch debounce
+
     def _on_hub_tab_changed(self, event=None):
         hub_key = self._get_current_hub_key()
         if not hub_key or hub_key == self._active_hub_key:
@@ -233,6 +238,45 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         if not getattr(panel, "_has_rendered_once", False):
             panel.refresh_display_async()
             panel._has_rendered_once = True
+        # Close the 1-4 day SQLite lag on holdings by force-pulling ESI
+        # history for tracked items in this region. Refreshes the holdings
+        # panel once fresh data lands.
+        self._freshen_holdings_for_hub(hub_key, panel, client)
+
+    def _freshen_holdings_for_hub(self, hub_key, panel, client):
+        if not client:
+            return
+        holdings_panel = getattr(panel, "holdings_panel", None)
+        if holdings_panel is None:
+            return
+        type_ids = [e.type_id for e in holdings_panel.holdings.get_all()]
+        if not type_ids:
+            return
+        now = datetime.now(timezone.utc)
+        last = self._holdings_freshen_ts.get(hub_key)
+        if last is not None:
+            age = (now - last).total_seconds()
+            if age < self._HOLDINGS_FRESHEN_MIN_INTERVAL:
+                return
+        self._holdings_freshen_ts[hub_key] = now
+        region_id = holdings_panel.region_id
+
+        def run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                async def do_freshen():
+                    client.ensure_session()
+                    client.reset_for_new_loop()
+                    await client.freshen_history_for_items(region_id, type_ids)
+                loop.run_until_complete(do_freshen())
+                submit(holdings_panel.refresh_display)
+            except Exception as e:
+                print(f"[StockMarket-{hub_key}] holdings ESI freshen failed: {e}")
+            finally:
+                loop.close()
+
+        threading.Thread(target=run, daemon=True).start()
 
     # =========================================================================
     # Status Updates

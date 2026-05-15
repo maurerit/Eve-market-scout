@@ -562,3 +562,38 @@ class ESIClient(TypeNameMixin):
     async def _get_market_history_raw(self, region_id: int, type_id: int) -> list[dict]:
         """Fetch market history with exceptions not caught (for diagnostics)."""
         return await self._get(f"/markets/{region_id}/history/", {"type_id": type_id})
+
+    async def freshen_history_for_items(self, region_id: int,
+                                         type_ids: list[int]) -> None:
+        """Force-fetch ESI history for tracked items and merge into history_cache.
+
+        Unlike get_market_history_bulk (which short-circuits on SQLite hits
+        and never calls ESI for items everef has), this always calls ESI.
+        Used by the stock market holdings UI to close the 1-4 day recency
+        gap on user-tracked items: SQLite gives the long tail, ESI fills
+        the most recent few days that haven't been imported yet.
+
+        Merge rule: keep all existing dates (SQLite usually has more
+        history), add any ESI dates not already present, sort newest-first.
+        """
+        if not type_ids:
+            return
+        esi_results, _ = await self._fetch_history_from_esi(
+            region_id, list(type_ids), track_errors=False
+        )
+        if region_id not in self.history_cache:
+            self.history_cache[region_id] = {}
+        region_cache = self.history_cache[region_id]
+        for tid, fresh in esi_results.items():
+            if not fresh:
+                continue
+            existing = region_cache.get(tid, [])
+            if not existing:
+                region_cache[tid] = fresh
+                continue
+            existing_dates = {r.get("date") for r in existing}
+            merged = list(existing) + [
+                r for r in fresh if r.get("date") not in existing_dates
+            ]
+            merged.sort(key=lambda r: r.get("date") or "", reverse=True)
+            region_cache[tid] = merged
