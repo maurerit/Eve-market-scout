@@ -262,6 +262,13 @@ class MainScanMixin:
         if isinstance(scan_result, CrossHubScanResult):
             self._display_crosshub_deals(scan_result, is_auto)
             return
+
+        # Same-station scan: no demand rows for this scan; clear the tab.
+        if hasattr(self, 'demand_tab_manager') and self.demand_tab_manager:
+            self.demand_tab_manager.clear(
+                hint="Demand/Restock applies only to Cross-Hub scans "
+                     "(different Buy and Sell stations)."
+            )
         
         # Handle normal ScanResult format
         if isinstance(scan_result, ScanResult):
@@ -365,6 +372,11 @@ class MainScanMixin:
             self.deals_manager.high_risk_tree,
             self.previous_deal_ids, is_auto
         )
+
+        # Demand / Restock — populate from the same scan result.
+        if hasattr(self, 'demand_tab_manager') and self.demand_tab_manager:
+            demand_rows = getattr(scan_result, 'demand_rows', None) or []
+            self.demand_tab_manager.display_rows(demand_rows)
         
         # Update Steals tab to show empty (cross-hub doesn't have steals)
         for item in self.deals_manager.steals_tree.get_children():

@@ -32,6 +32,51 @@ except ImportError:
 MAX_DAYS_TO_SELL = 2.0
 CAPITAL_THRESHOLD = 0.5
 
+
+# =============================================================================
+# Item-category keyword filter — shared between the top filter bar (deals
+# tabs) and the Demand/Restock tab's inline checkboxes. Pure function so
+# both call sites point at the same keyword lists.
+# =============================================================================
+_APPAREL_KEYWORDS = (
+    "pants", "jacket", "coat", "shirt", "boots", "gloves",
+    "goggles", "dress", "skirt", "vest", "suit", "headwear",
+    "monocle", "glasses", "eyewear", " top", "mittens",
+    "men's", "women's", "male", "female",
+)
+_SKILLBOOK_KEYWORDS = ("skill", "certificate", "training")
+
+
+def passes_category_filters_for_name(
+    name: str,
+    *,
+    show_blueprints: bool,
+    show_skins: bool,
+    show_skillbooks: bool,
+    show_apparel: bool,
+    show_limited: bool,
+    show_unlimited: bool,
+) -> bool:
+    """Return True if ``name`` survives the category toggles.
+
+    ``True`` for a Show flag means "let items of that category through";
+    ``False`` filters them out. Caller can lowercase or not — done here.
+    """
+    n = name.lower()
+    if not show_blueprints and n.endswith("blueprint"):
+        return False
+    if not show_skins and (" skin" in n or n.startswith("skin")):
+        return False
+    if not show_skillbooks and any(kw in n for kw in _SKILLBOOK_KEYWORDS):
+        return False
+    if not show_apparel and any(kw in n for kw in _APPAREL_KEYWORDS):
+        return False
+    if not show_limited and "limited" in n:
+        return False
+    if not show_unlimited and "unlimited" in n:
+        return False
+    return True
+
 # File for persistent ignore list - use centralized data directory
 IGNORE_FILE = str(get_data_dir() / "ignored_items.json")
 
@@ -343,44 +388,19 @@ class FilterManager:
                 if deal.system_name.lower() != hub_name:
                     return False
 
-        # Check blueprints
-        if not self.show_blueprints_var.get():
-            if name.endswith("blueprint"):
-                return False
+        return self.passes_category_filters(name)
 
-        # Check SKINs
-        if not self.show_skins_var.get():
-            if " skin" in name or name.startswith("skin"):
-                return False
-
-        # Check skillbooks
-        if not self.show_skillbooks_var.get():
-            skill_keywords = ["skill", "certificate", "training"]
-            if any(kw in name for kw in skill_keywords):
-                return False
-
-        # Check apparel
-        if not self.show_apparel_var.get():
-            apparel_keywords = [
-                "pants", "jacket", "coat", "shirt", "boots", "gloves",
-                "goggles", "dress", "skirt", "vest", "suit", "headwear",
-                "monocle", "glasses", "eyewear", " top", "mittens",
-                "men's", "women's", "male", "female"
-            ]
-            if any(kw in name for kw in apparel_keywords):
-                return False
-
-        # Check limited items
-        if not self.show_limited_var.get():
-            if "limited" in name:
-                return False
-
-        # Check unlimited items
-        if not self.show_unlimited_var.get():
-            if "unlimited" in name:
-                return False
-
-        return True
+    def passes_category_filters(self, name: str) -> bool:
+        """Return True if the item name passes this manager's category toggles."""
+        return passes_category_filters_for_name(
+            name,
+            show_blueprints=self.show_blueprints_var.get(),
+            show_skins=self.show_skins_var.get(),
+            show_skillbooks=self.show_skillbooks_var.get(),
+            show_apparel=self.show_apparel_var.get(),
+            show_limited=self.show_limited_var.get(),
+            show_unlimited=self.show_unlimited_var.get(),
+        )
 
     def is_high_risk(self, deal: Deal) -> bool:
         """

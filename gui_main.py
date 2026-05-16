@@ -16,6 +16,7 @@ from gui_watchlist import WatchlistTabManager
 from gui_npc_orders import NPCOrdersTabManager
 from gui_tracking import TrackingTabManager
 from gui_crosshub import CrossHubDisplayManager
+from gui_demand_tab import DemandTabManager
 from gui_stockmarket import StockMarketTab
 from gui_main_controls import MainControlsMixin
 from gui_main_scan import MainScanMixin
@@ -102,7 +103,18 @@ class MarketScoutGUI(MainControlsMixin, MainScanMixin):
             root=self.root,
             get_client=self.get_client,
         )
-        
+
+        # Demand / Restock tab — shares Buy/Sell station selectors with cross-hub
+        # but lives in its own tab so cross-hub stays untouched. Populated only
+        # by cross-hub scans (same-station mode leaves it empty).
+        self.demand_tab_manager = DemandTabManager(
+            self.notebook,
+            set_status=self._set_status,
+            root=self.root,
+            get_buy_station=lambda: self.buy_station,
+            get_sell_station=lambda: self.sell_station,
+        )
+
         # Initialize NPC Orders tab (replaces History)
         self.npc_orders_manager = NPCOrdersTabManager(
             self.notebook,
@@ -155,6 +167,13 @@ class MarketScoutGUI(MainControlsMixin, MainScanMixin):
         
         # Connect tracking manager to stock market for context menu
         self.tracking_manager.stock_market_tab = self.stock_market_tab
+
+        # Connect demand tab to watchlist + stock-market for its context menu.
+        # Note: the demand tab does NOT consume the top filter bar — it has its
+        # own inline category toggles so users don't have to guess which row of
+        # checkboxes drives which tab.
+        self.demand_tab_manager.watchlist_manager = self.watchlist_manager
+        self.demand_tab_manager.stock_market_tab = self.stock_market_tab
         
         # Wire up stock market holdings sync from ESI orders
         self.tracking_manager._setup_stock_market_sync()

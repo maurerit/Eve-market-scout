@@ -45,6 +45,11 @@ class CrossHubScanResult:
     high_risk: list  # CrossHubDeal list
     buy_station_orders: list[dict]
     sell_station_orders: list[dict]
+    demand_rows: list = None  # scanner_demand.DemandRow list
+
+    def __post_init__(self):
+        if self.demand_rows is None:
+            self.demand_rows = []
 
 
 class MarketScanner:
@@ -433,14 +438,40 @@ class MarketScanner:
         
         print(f"Cross-hub Low Risk: {len(low_risk)}")
         print(f"Cross-hub High Risk: {len(high_risk)}")
-        
+
+        # Demand / Restock pass — reuses the data we already have, no extra ESI.
+        # Different lens than arbitrage: "how much to ship to fill demand."
+        demand_rows = []
+        try:
+            from scanner_demand import build_demand_rows
+            update("Computing demand / restock rows...", 92)
+            demand_rows = build_demand_rows(
+                buy_station_data=buy_data,
+                sell_station_data=sell_data,
+                names=names,
+                buy_station_history=buy_history,
+                sell_station_history=sell_history,
+                buy_station_key=buy_station_key,
+                sell_station_key=sell_station_key,
+                buy_skills=buy_skills,
+                sell_skills=sell_skills,
+                reference_date=(self.client.market_history.get_latest_date()
+                                if self.client.market_history else None),
+            )
+            print(f"Demand/Restock rows: {len(demand_rows)}")
+        except Exception as e:
+            print(f"[Demand] build_demand_rows failed: {e}")
+            import traceback
+            traceback.print_exc()
+
         update("Complete!", 100)
-        
+
         return CrossHubScanResult(
             low_risk=low_risk,
             high_risk=high_risk,
             buy_station_orders=buy_orders,
-            sell_station_orders=sell_orders
+            sell_station_orders=sell_orders,
+            demand_rows=demand_rows,
         )
 
     def _process_orders(self, orders: list[dict]) -> dict[int, dict]:
@@ -485,10 +516,12 @@ class MarketScanner:
     def _process_orders_crosshub(self, orders: list[dict]) -> dict[int, dict]:
         """
         Process orders for cross-hub scanning.
-        
+
         Tracks:
-        - Lowest sell, 2nd lowest sell, sell volume
+        - Lowest sell, 2nd lowest sell, sell volume at floor
         - Highest buy AND buy volume (needed for guaranteed profit calc)
+        - total_sell_qty / total_buy_qty aggregates (consumed by Demand/Restock
+          to compute days-of-stock and source availability)
         """
         data = {}
 
@@ -504,19 +537,22 @@ class MarketScanner:
                     "sell": float("inf"),
                     "sell_2nd": float("inf"),
                     "buy": 0,
-                    "buy_volume": 0,  # Track buy order volume
+                    "buy_volume": 0,
                     "volume": 0,
+                    "total_sell_qty": 0,
+                    "total_buy_qty": 0,
                     "system_id": 0
                 }
 
             if is_buy:
+                data[type_id]["total_buy_qty"] += volume
                 if price > data[type_id]["buy"]:
                     data[type_id]["buy"] = price
                     data[type_id]["buy_volume"] = volume
                 elif price == data[type_id]["buy"]:
-                    # Same price - add to volume
                     data[type_id]["buy_volume"] += volume
             else:
+                data[type_id]["total_sell_qty"] += volume
                 if price < data[type_id]["sell"]:
                     data[type_id]["sell_2nd"] = data[type_id]["sell"]
                     data[type_id]["sell"] = price

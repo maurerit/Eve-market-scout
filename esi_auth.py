@@ -10,6 +10,8 @@ Supports two character slots:
 
 import json
 import os
+import subprocess
+import sys
 import webbrowser
 import threading
 import requests
@@ -43,6 +45,9 @@ REQUIRED_SCOPES = [
     "esi-markets.read_character_orders.v1",      # Active orders
     "esi-skills.read_skills.v1",                 # Character skills for fee calculation
     "esi-characters.read_standings.v1",          # Standings for broker fee calculation
+    "esi-universe.read_structures.v1",           # Resolve structure name/system/type
+    "esi-markets.structure_markets.v1",          # Read orders in player-owned structures
+    "esi-search.search_structures.v1",           # Find structures by name (add-station dialog)
 ]
 
 
@@ -55,6 +60,51 @@ def generate_code_challenge(verifier: str) -> str:
     """Generate code challenge from verifier using S256 method."""
     digest = hashlib.sha256(verifier.encode('ascii')).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
+
+
+def _open_url_robust(url: str) -> bool:
+    """Open url in the user's default browser, with fallbacks.
+
+    Three strategies in order:
+      1. webbrowser.open — works in most environments
+      2. ShellExecuteW via ctypes — no child process, no PATH lookup, so it
+         bypasses AV/ASR rules and job-object policies that block
+         CreateProcess from python.exe (which is what kills both
+         webbrowser.open's startfile path and subprocess.Popen)
+      3. subprocess.Popen of cmd — last resort, only useful when
+         ShellExecuteW is unavailable
+    """
+    try:
+        if webbrowser.open(url):
+            return True
+    except Exception as e:
+        print(f"[Auth] webbrowser.open raised: {e}")
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            # SW_SHOWNORMAL = 1. Return value > 32 indicates success;
+            # see Win32 ShellExecute docs for the historical HINSTANCE quirk.
+            rc = ctypes.windll.shell32.ShellExecuteW(
+                None, "open", url, None, None, 1
+            )
+            if rc > 32:
+                return True
+            print(f"[Auth] ShellExecuteW returned {rc} (failure code)")
+        except Exception as e:
+            print(f"[Auth] ShellExecuteW raised: {e}")
+
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", url],
+                shell=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return True
+        except Exception as e:
+            print(f"[Auth] cmd-start fallback raised: {e}")
+
+    return False
 
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
@@ -333,7 +383,17 @@ class ESIAuth:
                 server.timeout = 120
 
                 auth_url = self.get_auth_url()
-                webbrowser.open(auth_url)
+                opened = _open_url_robust(auth_url)
+
+                # Surface URL if auto-open failed, but keep listening: EVE
+                # redirects to localhost:8888 regardless of how the auth page
+                # was reached, so paste-manually completes the same flow.
+                if not opened:
+                    print("=" * 70)
+                    print("BROWSER DID NOT OPEN AUTOMATICALLY.")
+                    print("Paste this URL into any browser to continue login:")
+                    print(auth_url)
+                    print("=" * 70)
 
                 # Wait for callback
                 while server.auth_code is None and server.auth_error is None:

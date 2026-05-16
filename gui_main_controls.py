@@ -159,6 +159,15 @@ class MainControlsMixin:
         )
         self.add_station_btn.pack(side=tk.LEFT, padx=5)
 
+        # Find Player Structures button
+        self.find_structures_btn = ttk.Button(
+            control_frame,
+            text="Find Structures",
+            command=self._on_find_structures,
+            width=14,
+        )
+        self.find_structures_btn.pack(side=tk.LEFT, padx=5)
+
         # Status label
         self.status_label = ttk.Label(
             control_frame,
@@ -238,6 +247,11 @@ class MainControlsMixin:
     def _open_data_folder(self):
         """Open the data folder in system file manager."""
         open_data_folder()
+
+    def _on_find_structures(self):
+        """Open the discovery dialog for player-owned structures."""
+        from gui_discover_structures import DiscoverStructuresDialog
+        DiscoverStructuresDialog(parent=self.root)
 
     def _on_add_station(self):
         """Open the Add / Manage Custom Stations dialog."""
