@@ -155,6 +155,7 @@ class StockMarketHubPanel(HubPanelRefreshMixin, HubFilterPhaseMixin):
             set_status=self.set_status,
             on_item_selected=self._on_item_added_to_holdings,
             on_double_click=self._on_item_double_click,
+            settings=getattr(self, "settings", None),
         )
         self.risk_panels[risk_level] = panel
     

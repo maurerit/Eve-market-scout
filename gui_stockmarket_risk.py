@@ -43,12 +43,14 @@ class RiskCategoryPanel:
         set_status: Optional[Callable[[str], None]] = None,
         on_item_selected: Optional[Callable[[int, str], None]] = None,
         on_double_click: Optional[Callable[[int, str], None]] = None,
+        settings=None,
     ):
         self.parent = parent
         self.hub_key = hub_key
         self.risk_level = risk_level
         self.profiles = profiles
         self.filters = filters
+        self.settings = settings
         self.get_client = get_client
         self.set_status = set_status or (lambda s: None)
         self.on_item_selected = on_item_selected
@@ -478,10 +480,25 @@ class RiskCategoryPanel:
         all_profiles = self.profiles.get_all_profiles()
         region_profiles = [p for p in all_profiles if p.region_id == self.region_id]
 
+        # Volume gate — drop items below the configured min_daily_volume.
+        # Reads from StockMarketSettings (what the Settings dialog writes
+        # to), not StockMarketFilters which is a separate object.
+        min_volume = (
+            self.settings.min_daily_volume if self.settings else 0
+        )
+        print(
+            f"[RiskPanel-{self.hub_key}-{self.risk_level}] "
+            f"gate: settings={self.settings is not None} "
+            f"min_volume={min_volume} "
+            f"profiles={len(region_profiles)}"
+        )
+
         # Filter by risk level
         items_to_show = []
 
         for profile in region_profiles:
+            if min_volume > 0 and getattr(profile, "avg_daily_volume", 0) < min_volume:
+                continue
             yearly_stats = self.profiles.get_yearly_stats(profile.type_id, self.region_id)
             trend = self._get_trend(yearly_stats, profile)
 

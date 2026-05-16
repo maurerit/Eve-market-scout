@@ -507,6 +507,10 @@ class StockMarketColdStartMixin:
                 run_material_filter_compute(
                     hub_key, region_id, self.profiles,
                     progress_cb=progress_cb,
+                    min_volume=getattr(
+                        getattr(self, "settings", None),
+                        "min_daily_volume", 0,
+                    ),
                 )
             except Exception as e:
                 print(f"[ColdStart] phase 5: {hub_name} failed: {e}")
@@ -561,6 +565,10 @@ class StockMarketColdStartMixin:
                 run_leading_indicators_compute(
                     hub_key, region_id, self.profiles,
                     progress_cb=progress_cb,
+                    min_volume=getattr(
+                        getattr(self, "settings", None),
+                        "min_daily_volume", 0,
+                    ),
                 )
             except Exception as e:
                 print(f"[ColdStart] phase 6: {hub_name} failed: {e}")

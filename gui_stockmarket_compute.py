@@ -30,6 +30,7 @@ detail.  Called from the worker thread.  Caller is responsible for
 marshalling onto the main thread if it touches Tk widgets.
 """
 
+import time
 from typing import Callable, Dict, Optional
 
 
@@ -82,6 +83,7 @@ def run_material_filter_compute(
     region_id: int,
     profiles_manager,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
+    min_volume: int = 0,
 ) -> Dict[str, int]:
     """Run material filter compute for a hub.
 
@@ -107,6 +109,16 @@ def run_material_filter_compute(
     clear_material_risk_cache_for_region(region_id, hub_key=hub_key)
 
     region_profiles = profiles_manager.get_profiles_for_region(region_id)
+
+    if min_volume > 0:
+        before = len(region_profiles)
+        region_profiles = [
+            p for p in region_profiles
+            if getattr(p, "avg_daily_volume", 0) >= min_volume
+        ]
+        print(f"[ColdStart-{hub_key}] MF volume gate: "
+              f"{len(region_profiles)}/{before} pass (>= {min_volume}/day)")
+
     all_stats = profiles_manager.get_all_yearly_stats_for_region(
         region_id, context_label=hub_key
     )
@@ -181,6 +193,8 @@ def run_material_filter_compute(
         if progress_cb and (idx % 10 == 0 or idx == total):
             progress_cb(idx, total, f"Analyzing {idx}/{total}")
 
+        time.sleep(0)  # yield GIL so Tk mainloop stays responsive
+
     if pending_saves:
         if progress_cb:
             progress_cb(total, total, f"Saving {len(pending_saves)} results")
@@ -202,6 +216,7 @@ def run_leading_indicators_compute(
     region_id: int,
     profiles_manager,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
+    min_volume: int = 0,
 ) -> Dict[str, int]:
     """Run leading indicators compute for a hub.
 
@@ -218,6 +233,16 @@ def run_leading_indicators_compute(
     import leading_indicators_storage
 
     region_profiles = profiles_manager.get_profiles_for_region(region_id)
+
+    if min_volume > 0:
+        before = len(region_profiles)
+        region_profiles = [
+            p for p in region_profiles
+            if getattr(p, "avg_daily_volume", 0) >= min_volume
+        ]
+        print(f"[ColdStart-{hub_key}] LI volume gate: "
+              f"{len(region_profiles)}/{before} pass (>= {min_volume}/day)")
+
     total = len(region_profiles)
     print(f"[ColdStart-{hub_key}] === Leading Indicators === "
           f"({total} items, region {region_id})")
@@ -260,6 +285,8 @@ def run_leading_indicators_compute(
             print(f"[ColdStart-{hub_key}] LI progress: {idx}/{total} "
                   f"(computed={computed}, no-history={skipped}, "
                   f"errored={errored})")
+
+        time.sleep(0)  # yield GIL so Tk mainloop stays responsive
 
     if results:
         if progress_cb:

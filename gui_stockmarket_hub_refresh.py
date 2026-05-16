@@ -117,6 +117,24 @@ class HubPanelRefreshMixin:
                     f"profiles for region {self.region_id}"
                 )
 
+                # Volume gate — drop items below the configured min_daily_volume
+                # so they never reach the Low/Medium/High panels.
+                min_volume = getattr(
+                    getattr(self, "settings", None),
+                    "min_daily_volume", 0,
+                )
+                if min_volume > 0:
+                    before = len(region_profiles)
+                    region_profiles = [
+                        p for p in region_profiles
+                        if getattr(p, "avg_daily_volume", 0) >= min_volume
+                    ]
+                    print(
+                        f"[StockMarket-{self.hub_key}] Volume gate: "
+                        f"{len(region_profiles)}/{before} pass "
+                        f"(>= {min_volume}/day)"
+                    )
+
                 all_stats = self.profiles.get_all_yearly_stats_for_region(
                     self.region_id, context_label=self.hub_key
                 )
