@@ -360,6 +360,16 @@ class ESIClient(TypeNameMixin):
 
         self._apply_earliest_expires(expires)
         self.order_cache.cache_orders_for_region(structure_id, orders, expires=expires)
+
+        # Phase 1: silent observed-history collection. record_snapshot
+        # swallows its own exceptions; the outer try guards the import path
+        # so a broken module can never block the scanner.
+        try:
+            from structure_history import StructureHistoryDB
+            StructureHistoryDB.singleton().record_snapshot(structure_id, orders)
+        except Exception as e:
+            print(f"[StructHist] hook skipped for {structure_id}: {e}")
+
         return orders
 
     async def get_market_orders(self, region_id: int, use_cache: bool = False,
