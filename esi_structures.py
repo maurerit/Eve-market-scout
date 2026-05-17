@@ -99,6 +99,26 @@ def fetch_structure_info(
 _STRUCTURE_ID_FLOOR = 1_000_000_000_000
 
 
+def is_structure_id(value: int) -> bool:
+    """Player structures live above 1T; NPC station IDs are well below."""
+    return value >= _STRUCTURE_ID_FLOOR
+
+
+def resolve_region_for_system(system_id: int) -> int:
+    """Walk system → constellation → region via public ESI (no auth)."""
+    r1 = requests.get(
+        f"{BASE_URL}/universe/systems/{system_id}/", timeout=30
+    )
+    r1.raise_for_status()
+    const_id = r1.json()["constellation_id"]
+
+    r2 = requests.get(
+        f"{BASE_URL}/universe/constellations/{const_id}/", timeout=30
+    )
+    r2.raise_for_status()
+    return r2.json()["region_id"]
+
+
 def discover_accessible_structures(
     auth: ESIAuth, slot: str = "seller"
 ) -> list[StructureInfo]:

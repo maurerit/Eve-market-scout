@@ -168,6 +168,15 @@ class MainControlsMixin:
         )
         self.find_structures_btn.pack(side=tk.LEFT, padx=5)
 
+        # Browse raw structure orders (dev/debug)
+        self.browse_orders_btn = ttk.Button(
+            control_frame,
+            text="Browse Orders",
+            command=self._on_browse_orders,
+            width=13,
+        )
+        self.browse_orders_btn.pack(side=tk.LEFT, padx=5)
+
         # Status label
         self.status_label = ttk.Label(
             control_frame,
@@ -251,7 +260,67 @@ class MainControlsMixin:
     def _on_find_structures(self):
         """Open the discovery dialog for player-owned structures."""
         from gui_discover_structures import DiscoverStructuresDialog
-        DiscoverStructuresDialog(parent=self.root)
+        DiscoverStructuresDialog(
+            parent=self.root,
+            on_station_added=self._on_custom_station_added,
+        )
+
+    def _on_browse_orders(self):
+        """Browse raw orders at a registered structure hub (dev/debug)."""
+        from tkinter import messagebox
+        from config import TRADE_HUBS
+        from gui_browse_orders import BrowseStructureOrdersDialog
+
+        structures = [
+            (k, cfg) for k, cfg in TRADE_HUBS.items()
+            if cfg.get("type") == "structure"
+        ]
+        if not structures:
+            messagebox.showinfo(
+                "No Structures",
+                "No player structures registered. Use Find Structures → Add to Scanner first.",
+                parent=self.root,
+            )
+            return
+
+        if len(structures) == 1:
+            _, cfg = structures[0]
+            BrowseStructureOrdersDialog(
+                parent=self.root,
+                structure_id=cfg["station_id"],
+                structure_name=cfg.get("name", str(cfg["station_id"])),
+            )
+            return
+
+        # 2+ structures — small picker
+        picker = tk.Toplevel(self.root)
+        picker.title("Browse Orders — pick structure")
+        picker.transient(self.root)
+        picker.grab_set()
+        picker.geometry("420x150")
+
+        ttk.Label(picker, text="Structure:").pack(anchor=tk.W, padx=10, pady=(10, 2))
+        names = [cfg.get("name", str(cfg["station_id"])) for _, cfg in structures]
+        var = tk.StringVar(value=names[0])
+        ttk.Combobox(picker, textvariable=var, values=names,
+                     state="readonly", width=50).pack(padx=10, fill=tk.X)
+
+        def on_open():
+            idx = names.index(var.get())
+            _, cfg = structures[idx]
+            picker.destroy()
+            BrowseStructureOrdersDialog(
+                parent=self.root,
+                structure_id=cfg["station_id"],
+                structure_name=cfg.get("name", str(cfg["station_id"])),
+            )
+
+        btn_row = ttk.Frame(picker, padding=10)
+        btn_row.pack(fill=tk.X, side=tk.BOTTOM)
+        ttk.Button(btn_row, text="Open", command=on_open).pack(side=tk.RIGHT)
+        ttk.Button(btn_row, text="Cancel", command=picker.destroy).pack(
+            side=tk.RIGHT, padx=(0, 6)
+        )
 
     def _on_add_station(self):
         """Open the Add / Manage Custom Stations dialog."""

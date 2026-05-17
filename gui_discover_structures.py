@@ -1,24 +1,36 @@
 """Discover Player Structures dialog.
 
-Lets the user enumerate every player structure they have active orders at
-(per character slot), see system + name + ID, and copy the ID to clipboard.
-Persistence and scanner wiring is intentionally out of scope here — this is
-the lookup-only step so users can find structure IDs without leaving the app.
+Lets the user enumerate every player structure their character has active
+orders at (per slot), see system + name + ID, and register the picked one
+as a custom scanner hub in one click. The "Add to Scanner" path resolves
+the parent region via public ESI (no auth) so order-fetch + history calls
+both work afterward.
 """
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import threading
+from typing import Callable, Optional
 
 from tk_queue import submit
+from custom_stations import add_custom_station, get_custom_hub_key
+from config import TRADE_HUBS
 from esi_auth import ESIAuth
-from esi_structures import discover_accessible_structures, StructureAccessError
+from esi_structures import (
+    discover_accessible_structures, resolve_region_for_system,
+    StructureAccessError,
+)
 
 
 class DiscoverStructuresDialog(tk.Toplevel):
-    def __init__(self, parent):
+    def __init__(
+        self,
+        parent,
+        on_station_added: Optional[Callable[[str], None]] = None,
+    ):
         super().__init__(parent)
         self.auth = ESIAuth()
+        self.on_station_added = on_station_added
 
         self.title("Find Player Structures")
         self.geometry("640x420")
@@ -80,10 +92,19 @@ class DiscoverStructuresDialog(tk.Toplevel):
         # Bottom action bar
         bottom = ttk.Frame(self, padding=(10, 0, 10, 10))
         bottom.pack(fill=tk.X)
+        self.add_btn = ttk.Button(
+            bottom, text="Add to Scanner", command=self._on_add, state=tk.DISABLED
+        )
+        self.add_btn.pack(side=tk.LEFT)
+        self.browse_btn = ttk.Button(
+            bottom, text="Browse Orders (dev)",
+            command=self._on_browse, state=tk.DISABLED,
+        )
+        self.browse_btn.pack(side=tk.LEFT, padx=(6, 0))
         self.copy_btn = ttk.Button(
             bottom, text="Copy ID", command=self._on_copy, state=tk.DISABLED
         )
-        self.copy_btn.pack(side=tk.LEFT)
+        self.copy_btn.pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(bottom, text="Close", command=self.destroy).pack(side=tk.RIGHT)
 
     def _on_discover(self):
@@ -124,7 +145,29 @@ class DiscoverStructuresDialog(tk.Toplevel):
 
     def _on_select(self, _event=None):
         sel = self.tree.selection()
-        self.copy_btn.configure(state=tk.NORMAL if sel else tk.DISABLED)
+        enabled = tk.NORMAL if sel else tk.DISABLED
+        self.copy_btn.configure(state=enabled)
+        self.add_btn.configure(state=enabled)
+        self.browse_btn.configure(state=enabled)
+
+    def _on_browse(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        values = self.tree.item(sel[0], "values")
+        if len(values) < 3:
+            return
+        try:
+            structure_id = int(values[2])
+        except (TypeError, ValueError):
+            self.status_var.set("Selected row has invalid structure ID.")
+            return
+        name = str(values[1])
+        from gui_browse_orders import BrowseStructureOrdersDialog
+        BrowseStructureOrdersDialog(
+            parent=self, structure_id=structure_id,
+            structure_name=name, slot=self.slot_var.get(),
+        )
 
     def _on_copy(self):
         sel = self.tree.selection()
@@ -138,3 +181,73 @@ class DiscoverStructuresDialog(tk.Toplevel):
         self.clipboard_append(structure_id)
         self.update()  # ensures clipboard is committed before dialog might close
         self.status_var.set(f"Copied {structure_id} to clipboard.")
+
+    def _on_add(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        values = self.tree.item(sel[0], "values")
+        if len(values) < 3:
+            return
+        try:
+            system_id = int(values[0])
+            structure_id = int(values[2])
+        except (TypeError, ValueError):
+            self.status_var.set("Selected row has invalid IDs.")
+            return
+        name = str(values[1])
+
+        hub_key = get_custom_hub_key(structure_id)
+        if hub_key in TRADE_HUBS:
+            messagebox.showinfo(
+                "Already Added",
+                f"'{name}' is already in your scanner hubs.",
+                parent=self,
+            )
+            return
+
+        self.add_btn.configure(state=tk.DISABLED)
+        self.copy_btn.configure(state=tk.DISABLED)
+        self.status_var.set(f"Resolving region for {name}…")
+
+        def worker():
+            try:
+                region_id = resolve_region_for_system(system_id)
+            except Exception as e:
+                submit(lambda err=e: self._on_add_failed(err))
+                return
+            submit(lambda r=region_id: self._on_add_resolved(
+                structure_id, name, system_id, r
+            ))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_add_resolved(self, structure_id, name, system_id, region_id):
+        try:
+            added_key = add_custom_station(
+                {
+                    "station_id": structure_id,
+                    "name": name,
+                    "system_id": system_id,
+                    "region_id": region_id,
+                    "corp_id": None,
+                },
+                in_stock_market=False,
+                station_type="structure",
+            )
+        except Exception as e:
+            self._on_add_failed(e)
+            return
+
+        if self.on_station_added:
+            try:
+                self.on_station_added(added_key)
+            except Exception as e:
+                print(f"[DiscoverStructures] on_station_added callback raised: {e}")
+
+        self.status_var.set(f"Added '{name}' to scanner hubs.")
+        self._on_select()
+
+    def _on_add_failed(self, err):
+        self.status_var.set(f"Add failed: {err}")
+        self._on_select()

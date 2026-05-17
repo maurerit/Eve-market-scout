@@ -313,6 +313,55 @@ class ESIClient(TypeNameMixin):
         except Exception:
             self.system_cache[system_id] = {"security": 0, "name": "Unknown"}
 
+    async def get_orders_for_hub(
+        self, hub_key: str, use_cache: bool = False, force_refresh: bool = False
+    ) -> list[dict]:
+        """Fetch orders for any registered hub — NPC region or player structure.
+
+        Routes to `/markets/{region_id}/orders/` for NPC hubs (the historical
+        path) and to `/markets/structures/{id}/` for player structures via
+        the auth'd `esi_structures.fetch_structure_orders`. Structures don't
+        have a regional market, so we cache them under the structure_id —
+        which is >= 1T and can't collide with any region_id.
+        """
+        from config import get_hub_config
+        hub_config = get_hub_config(hub_key)
+
+        if hub_config.get("type") != "structure":
+            return await self.get_market_orders(
+                hub_config["region_id"],
+                use_cache=use_cache,
+                force_refresh=force_refresh,
+            )
+
+        structure_id = hub_config["station_id"]
+
+        if not force_refresh:
+            cached = self.order_cache.get_cached_orders(structure_id)
+            if cached is not None:
+                cache_entry = self.order_cache._order_cache.get(structure_id, {})
+                self._apply_earliest_expires(cache_entry.get('expires'))
+                return cached
+
+        from esi_auth import ESIAuth
+        from esi_structures import fetch_structure_orders, StructureAccessError
+
+        auth = ESIAuth()
+        loop = asyncio.get_event_loop()
+
+        def _blocking():
+            return fetch_structure_orders(structure_id, auth, slot="seller")
+
+        try:
+            orders, expires = await loop.run_in_executor(None, _blocking)
+        except StructureAccessError as e:
+            print(f"[Structure] {hub_key} fetch failed: {e}")
+            return []
+
+        self._apply_earliest_expires(expires)
+        self.order_cache.cache_orders_for_region(structure_id, orders, expires=expires)
+        return orders
+
     async def get_market_orders(self, region_id: int, use_cache: bool = False,
                                  force_refresh: bool = False) -> list[dict]:
         """Fetch all market orders for a region (handles pagination).

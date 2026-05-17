@@ -46,15 +46,28 @@ def save_custom_stations(stations: list[dict]):
     path.write_text(json.dumps(stations, indent=2), encoding="utf-8")
 
 
-def add_custom_station(station_dict: dict, in_stock_market: bool = False) -> str:
+def add_custom_station(
+    station_dict: dict,
+    in_stock_market: bool = False,
+    station_type: str = "npc",
+) -> str:
     """Persist a new custom station and register it in TRADE_HUBS.
+
+    `station_type` is "npc" or "structure". Structures route their order
+    fetches through the authenticated `/markets/structures/{id}/` endpoint
+    instead of the public regional one.
 
     Returns the hub_key.
     """
     from config import register_custom_station
 
     hub_key = get_custom_hub_key(station_dict["station_id"])
-    entry = {**station_dict, "hub_key": hub_key, "in_stock_market": in_stock_market}
+    entry = {
+        **station_dict,
+        "hub_key": hub_key,
+        "in_stock_market": in_stock_market,
+        "type": station_type,
+    }
 
     stations = load_custom_stations()
     if not any(s["hub_key"] == hub_key for s in stations):
@@ -87,9 +100,15 @@ def update_station_in_stockmarket(hub_key: str, in_stock_market: bool):
 
 
 def _bootstrap():
-    """Register all persisted custom stations into TRADE_HUBS at import time."""
+    """Register all persisted custom stations into TRADE_HUBS at import time.
+
+    Backfills `type="npc"` on legacy entries written before structures were
+    supported, so downstream code can branch on `cfg["type"]` unconditionally.
+    """
     from config import register_custom_station
     for entry in load_custom_stations():
+        if "type" not in entry:
+            entry["type"] = "npc"
         register_custom_station(entry)
 
 

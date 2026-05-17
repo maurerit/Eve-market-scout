@@ -118,8 +118,8 @@ class MarketScanner:
         local_region_id = self.hub_config["region_id"]
         is_jita = (self.hub_key == "jita")
         
-        update(f"Fetching {hub_name} region orders...", 5)
-        local_orders = await self.client.get_market_orders(local_region_id)
+        update(f"Fetching {hub_name} orders...", 5)
+        local_orders = await self.client.get_orders_for_hub(self.hub_key)
         print(f"{hub_name} orders: {len(local_orders)}, unique types: {len(set(o['type_id'] for o in local_orders))}")
 
         update("Checking system security...", 15)
@@ -127,7 +127,13 @@ class MarketScanner:
         await self.client.build_valid_systems_cache(progress_callback, system_ids)
 
         update("Filtering to high-sec...", 25)
-        valid_systems = self.client.valid_systems
+        valid_systems = set(self.client.valid_systems)
+        # Structures are user-chosen hubs; respect their home system regardless
+        # of security (player structures commonly live in low/null/WH space).
+        if self.hub_config.get("type") == "structure":
+            sys_id = self.hub_config.get("system_id")
+            if sys_id:
+                valid_systems.add(sys_id)
         local_orders_filtered = [o for o in local_orders if o.get("system_id") in valid_systems]
 
         # Jita orders - when scanning Jita, reuse local orders as reference
@@ -342,10 +348,14 @@ class MarketScanner:
         # === PHASE 1: Fetch market data ===
         
         update(f"Fetching {buy_config['name']} orders...", 5)
-        buy_orders = await self.client.get_market_orders(buy_region_id, use_cache=not refresh_data)
-        
+        buy_orders = await self.client.get_orders_for_hub(
+            buy_station_key, use_cache=not refresh_data
+        )
+
         update(f"Fetching {sell_config['name']} orders...", 15)
-        sell_orders = await self.client.get_market_orders(sell_region_id, use_cache=not refresh_data)
+        sell_orders = await self.client.get_orders_for_hub(
+            sell_station_key, use_cache=not refresh_data
+        )
         
         # === PHASE 2: Check system security ===
         
@@ -355,8 +365,14 @@ class MarketScanner:
         ))
         await self.client.build_valid_systems_cache(progress_callback, all_system_ids)
         
-        # Filter to high-sec
-        valid_systems = self.client.valid_systems
+        # Filter to high-sec, but never drop a user-chosen structure's home
+        # system — most player structures live outside high-sec.
+        valid_systems = set(self.client.valid_systems)
+        for cfg in (buy_config, sell_config):
+            if cfg.get("type") == "structure":
+                sys_id = cfg.get("system_id")
+                if sys_id:
+                    valid_systems.add(sys_id)
         buy_orders_filtered = [o for o in buy_orders if o.get("system_id") in valid_systems]
         sell_orders_filtered = [o for o in sell_orders if o.get("system_id") in valid_systems]
         
@@ -583,6 +599,7 @@ class MarketScanner:
         All profit/margin/velocity filtering happens in category processors.
         """
         candidates = []
+        is_structure = self.hub_config.get("type") == "structure"
 
         for type_id, local_info in local_hub.items():
             local_sell = local_info["sell"]
@@ -595,13 +612,20 @@ class MarketScanner:
             if local_sell == float("inf"):
                 continue
 
-            # Must have 2nd lowest to undercut
-            if local_sell_2nd == float("inf"):
-                continue
-
             # Get Jita data
             jita_info = jita.get(type_id, {"sell": float("inf"), "buy": 0})
             jita_sell = jita_info["sell"] if jita_info["sell"] != float("inf") else 0
+
+            # Need a competition reference for the ceiling math. On NPC hubs
+            # we require a real on-station 2nd-lowest. On structures most items
+            # have a single listing, so we synthesize the 2nd from the live
+            # Jita price — the "next best alternative" the buyer would chase.
+            # If Jita has no price either, we still can't price the deal.
+            if local_sell_2nd == float("inf"):
+                if is_structure and jita_sell > 0:
+                    local_sell_2nd = jita_sell
+                else:
+                    continue
 
             # SCAM CHECK: local price way above Jita = suspicious
             # Skip when scanning Jita itself (would incorrectly filter everything)

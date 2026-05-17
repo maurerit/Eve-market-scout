@@ -70,21 +70,43 @@ class OrderCacheStore:
         print(f"[API] Using cached orders for region {region_id} (age: {age:.0f}s)")
         return cached['orders']
 
-    def _disk_cache_path(self, region_id: int) -> Optional[Path]:
-        """Resolve on-disk cache path for a hub region, or None for non-hub regions."""
-        hub_key = _REGION_ID_TO_HUB_KEY.get(region_id)
+    def _disk_cache_path(self, key_id: int) -> Optional[Path]:
+        """Resolve on-disk cache path for a region id or structure id.
+
+        Region ids (NPC hubs) hit the precomputed map. Structure ids miss it,
+        so we fall back to scanning `TRADE_HUBS` for a structure-typed entry
+        with a matching `station_id` — necessary because custom structures
+        are registered at runtime after this module's import-time map was
+        already snapshotted.
+        """
+        hub_key = _REGION_ID_TO_HUB_KEY.get(key_id)
+        if hub_key is None:
+            for k, cfg in TRADE_HUBS.items():
+                if cfg.get("type") == "structure" and cfg.get("station_id") == key_id:
+                    hub_key = k
+                    break
         if hub_key is None:
             return None
         try:
             return get_data_dir() / f"orders_{hub_key}.json.gz"
         except Exception as e:
-            print(f"[API] disk cache path unavailable for region {region_id}: {e}")
+            print(f"[API] disk cache path unavailable for {key_id}: {e}")
             return None
 
     def _load_all_disk_caches(self):
-        """Load every hub region's persisted order cache from disk at startup."""
+        """Load every hub's persisted order cache from disk at startup.
+
+        Covers NPC hub regions plus any custom structures already registered
+        in TRADE_HUBS (custom_stations._bootstrap runs before ESIClient init,
+        so structures persisted from a prior session are present here).
+        """
         for region_id in _REGION_ID_TO_HUB_KEY:
             self._load_region_disk_cache(region_id)
+        for cfg in TRADE_HUBS.values():
+            if cfg.get("type") == "structure":
+                sid = cfg.get("station_id")
+                if sid:
+                    self._load_region_disk_cache(sid)
 
     def _load_region_disk_cache(self, region_id: int):
         """Load one region's persisted cache from disk. Silent on missing file."""
