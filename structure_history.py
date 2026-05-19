@@ -301,6 +301,264 @@ class StructureHistoryDB:
         )
 
 
+    # =========================================================================
+    # Reader API (Phase 2 — for Browse Orders' history view)
+    # =========================================================================
+
+    def snapshot_count(self, structure_id: int) -> int:
+        c = self._conn()
+        row = c.execute(
+            "SELECT COUNT(DISTINCT snapshot_at) FROM structure_snapshots "
+            "WHERE structure_id = ?",
+            (structure_id,),
+        ).fetchone()
+        return int(row[0] or 0)
+
+    def days_observed(self, structure_id: int) -> int:
+        """Distinct UTC days on which we have at least one snapshot.
+
+        This is the gate for "do we have enough data to trust observed history
+        over the regional proxy" — distinct from `days_with_fills` (the count
+        of days that produced any inferred fill). A 30-day-old structure with
+        a healthy 30 days of snapshots but only 4 days that traded should pass
+        the gate; the scanner's existing 7d/30d math handles the thin-volume
+        case naturally (calendar-day divide → low safe_velocity → filtered).
+        """
+        c = self._conn()
+        row = c.execute(
+            "SELECT COUNT(DISTINCT substr(snapshot_at, 1, 10)) "
+            "FROM structure_snapshots WHERE structure_id = ?",
+            (structure_id,),
+        ).fetchone()
+        return int(row[0] or 0)
+
+    def get_structure_summary(self, structure_id: int) -> dict:
+        """Top-of-tab header: snapshots, types seen, first/last observation,
+        days with at least one inferred fill."""
+        c = self._conn()
+        row = c.execute(
+            "SELECT COUNT(DISTINCT snapshot_at) AS snapshots, "
+            "       COUNT(DISTINCT type_id)    AS types, "
+            "       MIN(snapshot_at)           AS first_at, "
+            "       MAX(snapshot_at)           AS last_at "
+            "FROM structure_snapshots WHERE structure_id = ?",
+            (structure_id,),
+        ).fetchone()
+        days = c.execute(
+            "SELECT COUNT(DISTINCT day_utc) FROM structure_daily "
+            "WHERE structure_id = ?",
+            (structure_id,),
+        ).fetchone()[0]
+        return {
+            "snapshots": int(row["snapshots"] or 0),
+            "types_observed": int(row["types"] or 0),
+            "first_at": row["first_at"],
+            "last_at": row["last_at"],
+            "days_with_fills": int(days or 0),
+        }
+
+    def get_history(self, structure_id: int, type_id: int,
+                    days: int = 30) -> list[dict]:
+        """Return per-day history rows for one item at one structure.
+
+        Shape matches `MarketHistoryDB.get_history`:
+          [{date, average, lowest, highest, volume, order_count}, ...]
+        Newest-first. Only days with at least one inferred fill appear —
+        matching NPC regional semantics (where `daily_history` likewise only
+        carries rows for days that traded). The scanner's calendar-day
+        averaging then handles thin-volume structures correctly.
+        """
+        c = self._conn()
+        cutoff = (datetime.now(timezone.utc).date()
+                  - timedelta(days=days)).isoformat()
+        rows = c.execute(
+            "SELECT day_utc, volume_sold, sales_count, price_min, price_max, "
+            "       price_qty_sum "
+            "FROM structure_daily "
+            "WHERE structure_id = ? AND type_id = ? AND day_utc >= ? "
+            "ORDER BY day_utc DESC",
+            (structure_id, type_id, cutoff),
+        ).fetchall()
+        return [_daily_row_to_history_dict(r) for r in rows]
+
+    def get_history_bulk(self, structure_id: int, type_ids: list[int],
+                         days: int = 30) -> dict[int, list[dict]]:
+        """Bulk variant of `get_history`. Missing items get empty lists,
+        identical to `MarketHistoryDB.get_history_bulk` semantics so the
+        downstream pipeline can't tell which source produced it.
+        """
+        if not type_ids:
+            return {}
+        c = self._conn()
+        cutoff = (datetime.now(timezone.utc).date()
+                  - timedelta(days=days)).isoformat()
+        result: dict[int, list[dict]] = {int(tid): [] for tid in type_ids}
+        placeholders = ",".join("?" * len(type_ids))
+        rows = c.execute(
+            f"SELECT type_id, day_utc, volume_sold, sales_count, price_min, "
+            f"       price_max, price_qty_sum "
+            f"FROM structure_daily "
+            f"WHERE structure_id = ? AND type_id IN ({placeholders}) "
+            f"AND day_utc >= ? "
+            f"ORDER BY type_id, day_utc DESC",
+            [structure_id, *type_ids, cutoff],
+        ).fetchall()
+        for r in rows:
+            tid = int(r["type_id"])
+            result[tid].append(_daily_row_to_history_dict(r))
+        return result
+
+    def get_items_observed(self, structure_id: int) -> list[dict]:
+        """One entry per type_id ever seen at this structure.
+
+        Includes items with zero inferred fills (presence-only) so the History
+        tab can show "we saw this item but never inferred a sale" cases too.
+        """
+        c = self._conn()
+        presence = {
+            r["type_id"]: r["orders_seen"]
+            for r in c.execute(
+                "SELECT type_id, COUNT(DISTINCT order_id) AS orders_seen "
+                "FROM structure_snapshots WHERE structure_id = ? "
+                "GROUP BY type_id",
+                (structure_id,),
+            )
+        }
+        daily = {
+            r["type_id"]: r
+            for r in c.execute(
+                "SELECT type_id, "
+                "       COALESCE(SUM(volume_sold), 0) AS volume_sold, "
+                "       COALESCE(SUM(sales_count), 0) AS sales_count, "
+                "       MIN(price_min)                AS price_min, "
+                "       MAX(price_max)                AS price_max, "
+                "       COALESCE(SUM(price_qty_sum), 0) AS price_qty_sum, "
+                "       COUNT(*) AS days_with_fills "
+                "FROM structure_daily WHERE structure_id = ? "
+                "GROUP BY type_id",
+                (structure_id,),
+            )
+        }
+
+        out: list[dict] = []
+        for type_id, orders_seen in presence.items():
+            d = daily.get(type_id)
+            vol = int(d["volume_sold"]) if d else 0
+            avg = (d["price_qty_sum"] / vol) if (d and vol) else None
+            out.append({
+                "type_id": int(type_id),
+                "orders_seen": int(orders_seen),
+                "days_with_fills": int(d["days_with_fills"]) if d else 0,
+                "volume_sold": vol,
+                "sales_count": int(d["sales_count"]) if d else 0,
+                "price_min": d["price_min"] if d else None,
+                "price_max": d["price_max"] if d else None,
+                "avg_price": avg,
+            })
+        out.sort(key=lambda x: (-x["sales_count"], -x["volume_sold"], x["type_id"]))
+        return out
+
+    def get_event_trail(self, structure_id: int, type_id: int) -> list[dict]:
+        """Replay snapshots for one item; return events newest-first.
+
+        Each event: {at, kind, order_id, qty, price, issued}.
+        Kinds: "listing" | "partial_fill" | "full_fill" | "expire".
+
+        The first snapshot in the window emits no events (every order in it
+        is just "first seen" — we don't know whether it was new or pre-existing).
+        Inference rules match `_infer_and_apply` so the trail and the daily
+        rollup never disagree.
+        """
+        c = self._conn()
+        rows = c.execute(
+            "SELECT snapshot_at, order_id, price, volume_remain, issued, duration "
+            "FROM structure_snapshots "
+            "WHERE structure_id = ? AND type_id = ? "
+            "ORDER BY snapshot_at",
+            (structure_id, type_id),
+        ).fetchall()
+
+        by_snap: dict[str, dict[int, sqlite3.Row]] = {}
+        for r in rows:
+            by_snap.setdefault(r["snapshot_at"], {})[r["order_id"]] = r
+
+        snap_times = sorted(by_snap.keys())
+        events: list[dict] = []
+
+        for i, t in enumerate(snap_times):
+            if i == 0:
+                continue
+            try:
+                cur_dt = datetime.fromisoformat(t)
+            except ValueError:
+                continue
+            prev = by_snap[snap_times[i - 1]]
+            cur = by_snap[t]
+
+            for oid, row in cur.items():
+                if oid not in prev:
+                    events.append({
+                        "at": t,
+                        "kind": "listing",
+                        "order_id": int(oid),
+                        "qty": int(row["volume_remain"]),
+                        "price": float(row["price"]),
+                        "issued": row["issued"],
+                    })
+
+            for oid, prev_row in prev.items():
+                if oid in cur:
+                    delta = prev_row["volume_remain"] - cur[oid]["volume_remain"]
+                    if delta > 0:
+                        events.append({
+                            "at": t,
+                            "kind": "partial_fill",
+                            "order_id": int(oid),
+                            "qty": int(delta),
+                            "price": float(prev_row["price"]),
+                            "issued": prev_row["issued"],
+                        })
+                else:
+                    expiry = _parse_expiry(prev_row["issued"], prev_row["duration"])
+                    if expiry is not None and cur_dt < expiry:
+                        events.append({
+                            "at": t,
+                            "kind": "full_fill",
+                            "order_id": int(oid),
+                            "qty": int(prev_row["volume_remain"]),
+                            "price": float(prev_row["price"]),
+                            "issued": prev_row["issued"],
+                        })
+                    else:
+                        events.append({
+                            "at": t,
+                            "kind": "expire",
+                            "order_id": int(oid),
+                            "qty": int(prev_row["volume_remain"]),
+                            "price": float(prev_row["price"]),
+                            "issued": prev_row["issued"],
+                        })
+
+        events.reverse()
+        return events
+
+
+def _daily_row_to_history_dict(r: sqlite3.Row) -> dict:
+    """Translate a `structure_daily` row into MarketHistoryDB's get_history
+    dict shape so the scanner's history pipeline can't tell sources apart."""
+    vol = int(r["volume_sold"] or 0)
+    qty_sum = float(r["price_qty_sum"] or 0.0)
+    avg = (qty_sum / vol) if vol else 0.0
+    return {
+        "date": r["day_utc"],
+        "average": avg,
+        "lowest": float(r["price_min"]) if r["price_min"] is not None else 0.0,
+        "highest": float(r["price_max"]) if r["price_max"] is not None else 0.0,
+        "volume": vol,
+        "order_count": int(r["sales_count"] or 0),
+    }
+
+
 def _parse_expiry(issued: str, duration: int) -> Optional[datetime]:
     """Return UTC expiry datetime, or None if unparseable."""
     if not issued:

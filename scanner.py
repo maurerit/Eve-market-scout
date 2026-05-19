@@ -170,8 +170,11 @@ class MarketScanner:
         names = await self.client.get_type_names_bulk(type_ids)
 
         update(f"Fetching history for {len(type_ids)} items...", 60)
+        from history_source import get_history_for_hub
         jita_task = self.client.get_market_history_bulk(JITA_REGION_ID, type_ids, use_cache=True)
-        local_task = self.client.get_market_history_bulk(local_region_id, type_ids, use_cache=True)
+        # local_task dispatches: NPC hub → regional history, structure hub →
+        # observed history (once it has ≥7 days of snapshots; regional otherwise).
+        local_task = get_history_for_hub(self.client, self.hub_key, type_ids)
         jita_history, local_history = await asyncio.gather(jita_task, local_task)
 
         # Get reference date from market history db for accurate date filtering
@@ -407,13 +410,18 @@ class MarketScanner:
         names = await self.client.get_type_names_bulk(type_ids)
         
         update(f"Fetching sell station history...", 65)
-        sell_history = await self.client.get_market_history_bulk(
-            sell_region_id, type_ids, use_cache=True
+        from history_source import get_history_for_hub
+        # Dispatcher routes structure hubs to observed history, NPC hubs to
+        # regional. Result shape matches MarketHistoryDB.get_history_bulk
+        # exactly so process_crosshub / parse_history_stats / HistoryStats
+        # all work unchanged.
+        sell_history = await get_history_for_hub(
+            self.client, sell_station_key, type_ids
         )
-        
+
         update(f"Fetching buy station history...", 72)
-        buy_history = await self.client.get_market_history_bulk(
-            buy_region_id, type_ids, use_cache=True
+        buy_history = await get_history_for_hub(
+            self.client, buy_station_key, type_ids
         )
         
         # Fetch Jita history for ceiling cap and price validation
