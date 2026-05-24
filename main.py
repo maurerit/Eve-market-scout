@@ -559,21 +559,25 @@ def main():
     leading_indicators_storage.purge_before()
     
     print("[Startup] Launching GUI...")
+
+    # Eagerly initialize ESI client (and supplement cache) BEFORE constructing
+    # MarketScoutGUI. HoldingsPanel.__init__ calls refresh_display, which calls
+    # get_client(); without this pre-call, the lazy ESIClient construction
+    # (~5.6s on cold start) runs inside widget construction and the first
+    # paint freezes for that duration. Done while SIGINT is suppressed.
+    print("[Startup] Pre-initializing ESI client...")
+    get_client()
+
     # Pass the existing root to MarketScoutGUI instead of creating a new one
     gui = MarketScoutGUI(root, scan_callback=run_scan, get_client=get_client)
-    
+
     # Start thread-safe task queue polling AFTER GUI init, before mainloop
     from tk_queue import start_polling
     start_polling(root)
-    
+
     # Start daily update AFTER GUI init to avoid thread interference
     # during widget construction
     run_daily_update_background(db)
-    
-    # Eagerly initialize ESI client (and supplement cache) during startup
-    # while SIGINT is suppressed. Prevents heavy I/O from running inside
-    # a Tk callback when refresh_display fires after mainloop starts.
-    get_client()
     
     # Restore SIGINT handling now that startup is complete and mainloop
     # is about to run. User can Ctrl+C normally from here on.

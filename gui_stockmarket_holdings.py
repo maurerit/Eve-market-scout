@@ -328,22 +328,40 @@ class HoldingsPanel:
         refresh. Safe to call from the UI thread only.
         """
         if self._refresh_scheduled:
+            self._coalesce_count = getattr(self, "_coalesce_count", 1) + 1
             return
         try:
             if not self.frame.winfo_exists():
+                print(f"[HoldingsCoalesce] hub={self.hub_key} schedule SKIP: frame destroyed")
                 return
-        except tk.TclError:
+        except tk.TclError as e:
+            print(f"[HoldingsCoalesce] hub={self.hub_key} schedule SKIP: TclError {e}")
             return
         self._refresh_scheduled = True
-        self.frame.after_idle(self._do_scheduled_refresh)
+        self._coalesce_count = 1
+        try:
+            self.frame.after_idle(self._do_scheduled_refresh)
+        except tk.TclError as e:
+            # after_idle on a dying frame can throw; recover so we don't
+            # leave _refresh_scheduled stuck True (which would block all
+            # future refreshes silently).
+            self._refresh_scheduled = False
+            print(f"[HoldingsCoalesce] hub={self.hub_key} schedule FAIL: after_idle TclError {e}")
+            return
+        print(f"[HoldingsCoalesce] hub={self.hub_key} schedule: queued for idle")
 
     def _do_scheduled_refresh(self):
+        coalesced = getattr(self, "_coalesce_count", 1)
         self._refresh_scheduled = False
+        self._coalesce_count = 0
         try:
             if not self.frame.winfo_exists():
+                print(f"[HoldingsCoalesce] hub={self.hub_key} flush SKIP: frame destroyed (coalesced={coalesced})")
                 return
-        except tk.TclError:
+        except tk.TclError as e:
+            print(f"[HoldingsCoalesce] hub={self.hub_key} flush SKIP: TclError {e} (coalesced={coalesced})")
             return
+        print(f"[HoldingsCoalesce] hub={self.hub_key} flush: firing (coalesced={coalesced})")
         self.refresh_display()
 
     def refresh_display(self):
@@ -359,11 +377,13 @@ class HoldingsPanel:
         self.tree.delete(*self.tree.get_children())
         _step_tree_clear = _pt.perf_counter() - _ts
 
+        _ts = _pt.perf_counter()
         holdings = self.holdings.get_all()
         self.count_label.configure(text=f"{len(holdings)} holdings")
 
         holdings = self.holdings.get_all()
         self.count_label.configure(text=f"{len(holdings)} holdings")
+        _step_holdings_get = _pt.perf_counter() - _ts
 
         # Load leading indicators cache for this region (one query)
         _ts = _pt.perf_counter()
@@ -390,11 +410,13 @@ class HoldingsPanel:
             if holding_type_ids else {}
         )
         _step_history_bulk = _pt.perf_counter() - _ts
+        _ts = _pt.perf_counter()
         esi_cache = {}
         if self.get_client:
             client = self.get_client()
             if client:
                 esi_cache = client.history_cache.get(self.region_id, {})
+        _step_esi_cache = _pt.perf_counter() - _ts
 
         # Build list with sort keys
         items_to_show = []
@@ -422,7 +444,9 @@ class HoldingsPanel:
         _step_per_item = _pt.perf_counter() - _ts
 
         # Sort
+        _ts = _pt.perf_counter()
         items_to_show = self._sort_holdings(items_to_show)
+        _step_sort = _pt.perf_counter() - _ts
 
         # Populate tree
         _ts = _pt.perf_counter()
@@ -493,9 +517,12 @@ class HoldingsPanel:
             f"[PerfTimer] HoldingsPanel.refresh_display hub_region={self.region_id} "
             f"total={_pt_total*1000:.0f}ms holdings={len(holdings)} "
             f"tree_clear={_step_tree_clear*1000:.0f}ms "
+            f"holdings_get={_step_holdings_get*1000:.0f}ms "
             f"li_cache={_step_li_cache*1000:.0f}ms "
             f"history_bulk={_step_history_bulk*1000:.0f}ms "
+            f"esi_cache={_step_esi_cache*1000:.0f}ms "
             f"per_item_loop={_step_per_item*1000:.0f}ms "
+            f"sort={_step_sort*1000:.0f}ms "
             f"tree_insert={_step_tree_insert*1000:.0f}ms"
         )
 

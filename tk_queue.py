@@ -17,6 +17,7 @@ import time
 
 
 _queue = queue.Queue()
+_root = None
 
 
 def submit(func):
@@ -26,6 +27,24 @@ def submit(func):
     The function will execute during the next poll cycle (~50ms).
     """
     _queue.put(func)
+
+
+def schedule_idle(callback):
+    """Schedule callback for the next Tk idle tick.
+
+    Use for coalescing repeated work: multiple callers within one mainloop
+    iteration cooperate via their own dirty/scheduled flag, and the actual
+    work runs once when Tk becomes idle. Must be called from the UI thread.
+
+    Falls back to immediate execution if start_polling has not been called
+    yet (e.g. during module import or in tests).
+    """
+    if _root is None:
+        cb_name = getattr(callback, "__qualname__", None) or getattr(callback, "__name__", None) or repr(callback)
+        print(f"[TkQueue] schedule_idle FALLBACK (no root yet): running {cb_name} inline")
+        callback()
+        return
+    _root.after_idle(callback)
 
 
 def drain():
@@ -57,14 +76,17 @@ def drain():
 
 def start_polling(root, interval_ms=50):
     """Start polling the queue from root's after() loop.
-    
+
     Call once from main thread, after root is created but before mainloop().
     The poll runs inside mainloop via root.after(), which is safe because
     root.after() is called FROM the main thread.
     """
+    global _root
+    _root = root
+
     def _poll():
         drain()
         root.after(interval_ms, _poll)
-    
+
     root.after(interval_ms, _poll)
     print("[TkQueue] Polling started")

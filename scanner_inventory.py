@@ -162,13 +162,27 @@ class InventoryManager:
     def __init__(self, hub_key: str = "amarr"):
         self.hub_key = hub_key
         self.entries: Dict[int, InventoryEntry] = {}  # type_id -> entry
+        # Write-coalescing: mutators mark _dirty + schedule one idle flush
+        # instead of writing per-call (was 14+ full-JSON rewrites per ESI cycle).
+        self._dirty = False
+        self._save_scheduled = False
+        self._dirty_count = 0  # number of _save() calls since last actual write
         self._load()
+        import atexit
+        atexit.register(self._atexit_flush)
+
+    def _atexit_flush(self):
+        print(f"[InventoryCoalesce] hub={self.hub_key} atexit: dirty={self._dirty} pending_marks={self._dirty_count}")
+        self.flush()
 
     def set_hub(self, hub_key: str):
         """Switch to a different hub. Saves current, loads new."""
         if hub_key == self.hub_key:
             return
-        self._save()
+        # Flush synchronously: hub_key changes the destination file path,
+        # so any pending writes must hit the *current* file first.
+        print(f"[InventoryCoalesce] set_hub: {self.hub_key} -> {hub_key} (flushing first, dirty={self._dirty})")
+        self.flush()
         self.hub_key = hub_key
         self.entries = {}
         self._load()
@@ -189,6 +203,52 @@ class InventoryManager:
             print(f"[ScannerInventory] Error loading {path}: {e}")
 
     def _save(self):
+        """Mark dirty and schedule one coalesced flush on next idle tick.
+
+        Repeated callers within one mainloop iteration collapse to a single
+        actual disk write. Falls back to immediate write if tk_queue has no
+        root yet (e.g. during module import).
+        """
+        self._dirty = True
+        self._dirty_count += 1
+        if self._save_scheduled:
+            return
+        self._save_scheduled = True
+        try:
+            from tk_queue import schedule_idle
+            schedule_idle(self._flush_save)
+            print(f"[InventoryCoalesce] hub={self.hub_key} mark: dirty, idle flush scheduled")
+        except Exception as e:
+            # No tk root available; do the write now so data isn't lost.
+            print(f"[InventoryCoalesce] hub={self.hub_key} mark: schedule_idle failed ({e}), flushing inline")
+            self._flush_save()
+
+    def _flush_save(self):
+        """Idle-callback flush. Skips the write if nothing changed."""
+        coalesced = self._dirty_count
+        self._save_scheduled = False
+        if not self._dirty:
+            print(f"[InventoryCoalesce] hub={self.hub_key} flush: idle fired but not dirty (coalesced={coalesced})")
+            self._dirty_count = 0
+            return
+        print(f"[InventoryCoalesce] hub={self.hub_key} flush: writing (coalesced={coalesced})")
+        self._do_save_now()
+        self._dirty = False
+        self._dirty_count = 0
+
+    def flush(self):
+        """Synchronous immediate flush. Use before destination changes
+        (set_hub) and at shutdown (atexit).
+        """
+        if not self._dirty:
+            return
+        coalesced = self._dirty_count
+        print(f"[InventoryCoalesce] hub={self.hub_key} flush: explicit write (coalesced={coalesced})")
+        self._do_save_now()
+        self._dirty = False
+        self._dirty_count = 0
+
+    def _do_save_now(self):
         import time as _pt
         _pt0 = _pt.perf_counter()
         path = _inventory_file(self.hub_key)
