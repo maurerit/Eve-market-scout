@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from tk_queue import submit
 from esi_auth import ESIAuth
 from esi_structures import fetch_structure_orders, StructureAccessError
+from gui_browse_orders_filters import BrowseOrdersFilterMixin
 
 
 _KIND_LABELS = {
@@ -33,7 +34,7 @@ _KIND_LABELS = {
 }
 
 
-class BrowseStructureOrdersDialog(tk.Toplevel):
+class BrowseStructureOrdersDialog(BrowseOrdersFilterMixin, tk.Toplevel):
     def __init__(self, parent, structure_id: int, structure_name: str,
                  slot: str = "seller"):
         super().__init__(parent)
@@ -44,9 +45,12 @@ class BrowseStructureOrdersDialog(tk.Toplevel):
         self._type_names: dict[int, str] = {}
 
         self.title(f"Browse Orders — {structure_name}")
-        self.geometry("960x640")
-        self.minsize(780, 460)
+        self.geometry("960x720")
+        self.minsize(780, 520)
         self.transient(parent)
+
+        # Owned by BrowseOrdersFilterMixin: chips, taxonomy, available cats/groups.
+        self._init_filter_state()
 
         self._build()
         self._kick_fetch()
@@ -67,6 +71,8 @@ class BrowseStructureOrdersDialog(tk.Toplevel):
                   font=("Segoe UI", 8), foreground="gray").pack(
             fill=tk.X, padx=10, pady=(0, 4)
         )
+
+        self._build_filter_row(self)
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
@@ -212,53 +218,34 @@ class BrowseStructureOrdersDialog(tk.Toplevel):
     def _on_result(self, orders, err):
         if err is not None:
             self.status_var.set(f"Fetch failed: {err}")
+            self.set_current_orders([])
             self._refresh_history_view()
+            self._apply_filters_and_render()
             return
         if not orders:
             self.status_var.set(
                 "Fetch succeeded but returned zero orders — structure market is empty."
             )
+            self.set_current_orders([])
             self._refresh_history_view()
+            self._apply_filters_and_render()
             return
 
-        from sde_manager import get_sde_manager
-        sde = get_sde_manager()
         type_ids = sorted({o["type_id"] for o in orders})
-        self._type_names = sde.get_type_names_bulk(type_ids) if sde else {}
+        if self._sde:
+            self._type_names.update(self._sde.get_type_names_bulk(type_ids))
 
-        sells = sorted(
-            (o for o in orders if not o.get("is_buy_order")),
-            key=lambda o: (o.get("type_id", 0), o.get("price", 0.0)),
-        )
-        buys = sorted(
-            (o for o in orders if o.get("is_buy_order")),
-            key=lambda o: (o.get("type_id", 0), -o.get("price", 0.0)),
-        )
+        self.set_current_orders(orders)
 
-        for o in sells + buys:
-            tid = o["type_id"]
-            side = "Buy" if o.get("is_buy_order") else "Sell"
-            tag = "buy" if o.get("is_buy_order") else "sell"
-            self.tree.insert(
-                "", tk.END,
-                values=(
-                    side,
-                    self._type_names.get(tid, f"(type {tid})"),
-                    tid,
-                    f"{o.get('price', 0.0):,.2f}",
-                    f"{o.get('volume_remain', 0):,}",
-                    self._fmt_issued(o.get("issued")),
-                ),
-                tags=(tag,),
-            )
-
-        n_sell, n_buy = len(sells), len(buys)
+        n_sell = sum(1 for o in orders if not o.get("is_buy_order"))
+        n_buy = len(orders) - n_sell
         self.status_var.set(
             f"{len(orders)} orders — {n_sell} sell, {n_buy} buy, "
             f"across {len(type_ids)} item types."
         )
 
         self._refresh_history_view()
+        self._apply_filters_and_render()
 
     # --------------------------------------------------------------- history
 
@@ -280,47 +267,14 @@ class BrowseStructureOrdersDialog(tk.Toplevel):
 
         self.history_summary_var.set(_fmt_structure_summary(summary))
 
-        for row in self.items_tree.get_children():
-            self.items_tree.delete(row)
-
-        # Resolve names for any type_ids we haven't already looked up
-        from sde_manager import get_sde_manager
-        sde = get_sde_manager()
+        # Resolve names for any type_ids we haven't already looked up.
         missing = [it["type_id"] for it in items
                    if it["type_id"] not in self._type_names]
-        if missing and sde:
-            self._type_names.update(sde.get_type_names_bulk(missing))
+        if missing and self._sde:
+            self._type_names.update(self._sde.get_type_names_bulk(missing))
 
-        for it in items:
-            tid = it["type_id"]
-            avg = it["avg_price"]
-            pmin = it["price_min"]
-            pmax = it["price_max"]
-            range_str = (
-                f"{pmin:,.2f} – {pmax:,.2f}"
-                if (pmin is not None and pmax is not None) else ""
-            )
-            self.items_tree.insert(
-                "", tk.END, iid=str(tid),
-                values=(
-                    tid,
-                    self._type_names.get(tid, f"(type {tid})"),
-                    it["sales_count"],
-                    f"{it['volume_sold']:,}" if it["volume_sold"] else "",
-                    f"{avg:,.2f}" if avg is not None else "",
-                    range_str,
-                    it["days_with_fills"],
-                ),
-            )
-
-        # If nothing selected (or selection now stale), clear the trail pane
-        sel = self.items_tree.selection()
-        if not sel:
-            self.trail_summary_var.set("Select an item above.")
-            for row in self.trail_tree.get_children():
-                self.trail_tree.delete(row)
-        else:
-            self._load_trail_for(int(sel[0]))
+        self.set_history_items(items)
+        self._apply_filters_and_render()
 
     def _on_item_selected(self, _event):
         sel = self.items_tree.selection()

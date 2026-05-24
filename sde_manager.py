@@ -29,12 +29,41 @@ SDE_DB_FILE = "sde_types.db"
 SDE_VERSION_FILE = "sde_version.json"
 
 # Fuzzwork SDE downloads
-# invTypes table has everything we need
+# invTypes for item-level data, invMarketGroups for the in-game market tree
+# (the same hierarchy shown when a player opens the Regional Market window).
 FUZZWORK_BASE = "https://www.fuzzwork.co.uk/dump/latest"
 FUZZWORK_TYPES_URL = f"{FUZZWORK_BASE}/invTypes.csv.bz2"
+FUZZWORK_MARKET_GROUPS_URL = f"{FUZZWORK_BASE}/invMarketGroups.csv.bz2"
 
 # How old before we suggest updating (days)
 SDE_STALE_DAYS = 30
+
+
+# Fuzzwork's CSV exports use the literal string "None" for NULL cells (not an
+# empty cell). Both helpers below treat "" and "None" as the absence of a
+# value rather than letting int()/float() raise.
+def _parse_optional_int(value):
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s == "None" or s == "NULL":
+        return None
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_optional_float(value):
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s == "None" or s == "NULL":
+        return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
 
 
 @dataclass
@@ -49,6 +78,19 @@ class TypeInfo:
     group_id: Optional[int] = None  # Item group (e.g., "Frigate", "Shield Hardener")
 
 
+@dataclass
+class MarketGroupInfo:
+    """invMarketGroups row: one node in the market tree shown in-game.
+
+    `parent_group_id` is None for top-level entries (Ammunition & Charges,
+    Ship Equipment, etc.). The hierarchy can be many levels deep — items
+    live at leaves and we walk up via parent_group_id to find ancestors.
+    """
+    market_group_id: int
+    name: str
+    parent_group_id: Optional[int]
+
+
 class SDEManager:
     """Manages local SDE database for type lookups."""
     
@@ -60,6 +102,10 @@ class SDEManager:
         # In-memory cache for hot lookups
         self._name_cache: Dict[int, str] = {}
         self._info_cache: Dict[int, TypeInfo] = {}
+        # Market-group ancestry lives entirely in memory after the first load.
+        # The full set is small (~3-4k rows) so we keep parents + names hot.
+        self._mg_parents: Optional[Dict[int, Optional[int]]] = None
+        self._mg_names: Dict[int, str] = {}
     
     def _get_conn(self) -> sqlite3.Connection:
         """Get database connection. Creates new connection each call for thread safety."""
@@ -238,6 +284,139 @@ class SDEManager:
         info = self.get_type_info(type_id)
         return info.volume if info else None
     
+    def has_market_group_data(self) -> bool:
+        """Whether the `market_groups` table exists in this SDE install.
+
+        Older installs only have `types`. Callers should treat market-group
+        lookups as unavailable and hide any UI that depends on them until
+        the user re-downloads the SDE.
+        """
+        try:
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name = 'market_groups'"
+            )
+            row = cursor.fetchone()
+            conn.close()
+            return row is not None
+        except Exception:
+            return False
+
+    def get_type_info_bulk(self, type_ids: list[int]) -> Dict[int, TypeInfo]:
+        """Bulk fetch TypeInfo for many type_ids in one connection."""
+        result: Dict[int, TypeInfo] = {}
+        uncached = []
+        for tid in type_ids:
+            if tid in self._info_cache:
+                result[tid] = self._info_cache[tid]
+            else:
+                uncached.append(tid)
+        if not uncached:
+            return result
+        try:
+            conn = self._get_conn()
+            BATCH_SIZE = 500
+            for i in range(0, len(uncached), BATCH_SIZE):
+                batch = uncached[i:i + BATCH_SIZE]
+                placeholders = ",".join("?" * len(batch))
+                cursor = conn.execute(
+                    f"""SELECT type_id, name, volume, market_group_id,
+                               published, portion_size, group_id
+                        FROM types WHERE type_id IN ({placeholders})""",
+                    batch,
+                )
+                for row in cursor:
+                    info = TypeInfo(
+                        type_id=row["type_id"],
+                        name=row["name"],
+                        volume=row["volume"] or 0.0,
+                        market_group_id=row["market_group_id"],
+                        published=bool(row["published"]),
+                        portion_size=row["portion_size"] or 1,
+                        group_id=row["group_id"],
+                    )
+                    result[row["type_id"]] = info
+                    self._info_cache[row["type_id"]] = info
+            conn.close()
+        except Exception:
+            pass
+        return result
+
+    # ---------------------------------------------------------- market groups
+
+    def _ensure_market_groups_loaded(self):
+        """Load the full parent/name map on first access.
+
+        Market-group lookups (ancestry, children, name) all consult the same
+        in-memory dicts, so one load amortises every later query.
+        """
+        if self._mg_parents is not None:
+            return
+        self._mg_parents = {}
+        self._mg_names = {}
+        if not self.has_market_group_data():
+            return
+        try:
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "SELECT market_group_id, parent_group_id, name FROM market_groups"
+            )
+            for row in cursor:
+                mg_id = row["market_group_id"]
+                self._mg_parents[mg_id] = row["parent_group_id"]
+                self._mg_names[mg_id] = row["name"]
+            conn.close()
+        except Exception:
+            pass
+
+    def get_market_group_name(self, mg_id: int) -> Optional[str]:
+        self._ensure_market_groups_loaded()
+        return self._mg_names.get(mg_id)
+
+    def get_market_group_ancestry(self, mg_id: Optional[int]) -> list[int]:
+        """Return ancestry chain root-first: [top_level, ..., leaf].
+
+        Returns [] if mg_id is None or not present. The first element is the
+        depth-1 ancestor (matches what shows in the in-game market browser's
+        top-level list), the second is depth-2, etc.
+        """
+        if mg_id is None:
+            return []
+        self._ensure_market_groups_loaded()
+        if mg_id not in self._mg_parents:
+            return []
+        chain: list[int] = []
+        current: Optional[int] = mg_id
+        # Guard against pathological cycles in malformed data.
+        for _ in range(32):
+            if current is None:
+                break
+            chain.append(current)
+            current = self._mg_parents.get(current)
+        chain.reverse()
+        return chain
+
+    def list_top_level_market_groups(self) -> list[tuple[int, str]]:
+        """Top-level market groups (parent_group_id IS NULL), sorted by name."""
+        self._ensure_market_groups_loaded()
+        result = [
+            (mg_id, self._mg_names[mg_id])
+            for mg_id, parent in self._mg_parents.items()
+            if parent is None
+        ]
+        return sorted(result, key=lambda x: x[1].lower())
+
+    def get_market_group_children(self, parent_id: int) -> list[tuple[int, str]]:
+        """Direct children of `parent_id`, sorted by name."""
+        self._ensure_market_groups_loaded()
+        result = [
+            (mg_id, self._mg_names[mg_id])
+            for mg_id, parent in self._mg_parents.items()
+            if parent == parent_id
+        ]
+        return sorted(result, key=lambda x: x[1].lower())
+
     def get_types_by_market_group(self, market_group_id: int) -> list[TypeInfo]:
         """Get all types in a market group (for future filtering)."""
         try:
@@ -304,31 +483,29 @@ class SDEManager:
                 return False
         
         try:
-            # Download invTypes.csv.bz2
+            # Download invTypes.csv.bz2 + invMarketGroups.csv.bz2
             update("Downloading type data from Fuzzwork...", 5)
-            
-            timeout = aiohttp.ClientTimeout(total=120)
-            async with aiohttp.ClientSession(connector=make_connector(), timeout=timeout) as session:
-                async with session.get(FUZZWORK_TYPES_URL) as response:
+
+            async def _download(session, url: str, label: str) -> bytes:
+                async with session.get(url) as response:
                     if response.status != 200:
-                        update(f"Download failed: HTTP {response.status}", 0)
-                        return False
-                    
-                    total_size = int(response.headers.get("content-length", 0))
-                    downloaded = 0
+                        raise RuntimeError(f"{label} download failed: HTTP {response.status}")
                     chunks = []
-                    
                     async for chunk in response.content.iter_chunked(65536):
                         chunks.append(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            pct = int(5 + (downloaded / total_size) * 40)
-                            update(f"Downloading... {downloaded // 1024}KB", pct)
-                    
-                    compressed_data = b"".join(chunks)
-            
+                    return b"".join(chunks)
+
+            timeout = aiohttp.ClientTimeout(total=120)
+            async with aiohttp.ClientSession(connector=make_connector(), timeout=timeout) as session:
+                types_bytes = await _download(session, FUZZWORK_TYPES_URL, "invTypes")
+                update("Downloading market-group tree...", 40)
+                market_groups_bytes = await _download(
+                    session, FUZZWORK_MARKET_GROUPS_URL, "invMarketGroups"
+                )
+
             update("Decompressing...", 50)
-            csv_data = bz2.decompress(compressed_data).decode("utf-8")
+            csv_data = bz2.decompress(types_bytes).decode("utf-8")
+            market_groups_csv = bz2.decompress(market_groups_bytes).decode("utf-8")
             
             update("Building database...", 55)
             
@@ -348,6 +525,15 @@ class SDEManager:
             conn.execute("CREATE INDEX idx_market_group ON types(market_group_id)")
             conn.execute("CREATE INDEX idx_published ON types(published)")
             conn.execute("CREATE INDEX idx_group ON types(group_id)")
+
+            conn.execute("""
+                CREATE TABLE market_groups (
+                    market_group_id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    parent_group_id INTEGER
+                )
+            """)
+            conn.execute("CREATE INDEX idx_mg_parent ON market_groups(parent_group_id)")
             
             # Parse CSV
             # Fuzzwork invTypes columns:
@@ -362,44 +548,68 @@ class SDEManager:
             for row in reader:
                 try:
                     type_id = int(row["typeID"])
-                    name = row["typeName"]
-                    volume = float(row["volume"]) if row["volume"] else 0.0
-                    market_group = int(row["marketGroupID"]) if row["marketGroupID"] else None
-                    published = int(row["published"]) if row["published"] else 0
-                    portion_size = int(row["portionSize"]) if row["portionSize"] else 1
-                    group_id = int(row["groupID"]) if row["groupID"] else None
-                    
-                    records.append((
-                        type_id, name, volume, market_group,
-                        published, portion_size, group_id
-                    ))
-                    count += 1
-                    
-                    # Batch insert
-                    if len(records) >= 5000:
-                        conn.executemany(
-                            """INSERT INTO types 
-                               (type_id, name, volume, market_group_id, 
-                                published, portion_size, group_id)
-                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                            records
-                        )
-                        records = []
-                        pct = int(60 + (count / 50000) * 30)  # Estimate ~47k types
-                        update(f"Imported {count:,} types...", min(pct, 90))
-                except (ValueError, KeyError):
+                except (ValueError, KeyError, TypeError):
                     continue
+                name = row.get("typeName", "") or f"#{type_id}"
+                volume = _parse_optional_float(row.get("volume")) or 0.0
+                market_group = _parse_optional_int(row.get("marketGroupID"))
+                published = _parse_optional_int(row.get("published")) or 0
+                portion_size = _parse_optional_int(row.get("portionSize")) or 1
+                group_id = _parse_optional_int(row.get("groupID"))
+
+                records.append((
+                    type_id, name, volume, market_group,
+                    published, portion_size, group_id
+                ))
+                count += 1
+
+                # Batch insert
+                if len(records) >= 5000:
+                    conn.executemany(
+                        """INSERT INTO types
+                           (type_id, name, volume, market_group_id,
+                            published, portion_size, group_id)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        records
+                    )
+                    records = []
+                    pct = int(60 + (count / 50000) * 30)  # Estimate ~47k types
+                    update(f"Imported {count:,} types...", min(pct, 90))
             
             # Insert remaining
             if records:
                 conn.executemany(
-                    """INSERT INTO types 
+                    """INSERT INTO types
                        (type_id, name, volume, market_group_id,
                         published, portion_size, group_id)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     records
                 )
-            
+
+            # Import invMarketGroups
+            # Fuzzwork columns: marketGroupID,parentGroupID,marketGroupName,
+            # description,iconID,hasTypes
+            # NOTE: Fuzzwork represents NULL as the literal string "None", not
+            # an empty cell. Naive `int(row["parentGroupID"])` would explode on
+            # every top-level market group (parent is None) and we'd drop those
+            # rows entirely — which is exactly what bit us. Parse defensively.
+            update("Importing market groups...", 94)
+            mg_records = []
+            for row in csv.DictReader(io.StringIO(market_groups_csv)):
+                try:
+                    mg_id = int(row["marketGroupID"])
+                except (ValueError, KeyError, TypeError):
+                    continue
+                name = row.get("marketGroupName", "") or f"#{mg_id}"
+                parent = _parse_optional_int(row.get("parentGroupID"))
+                mg_records.append((mg_id, name, parent))
+            if mg_records:
+                conn.executemany(
+                    "INSERT INTO market_groups (market_group_id, name, parent_group_id) "
+                    "VALUES (?, ?, ?)",
+                    mg_records,
+                )
+
             conn.commit()
             conn.close()
             
@@ -413,12 +623,17 @@ class SDEManager:
             with open(self.version_path, "w") as f:
                 json.dump(version_info, f, indent=2)
             
-            # Clear caches
+            # Clear caches — force the market-group map to reload from the new DB.
             self._name_cache.clear()
             self._info_cache.clear()
+            self._mg_parents = None
+            self._mg_names = {}
             self._conn = None
-            
-            update(f"SDE loaded: {count:,} types", 100)
+
+            update(
+                f"SDE loaded: {count:,} types, {len(mg_records):,} market groups",
+                100,
+            )
             return True
             
         except Exception as e:
