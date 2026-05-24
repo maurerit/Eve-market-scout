@@ -51,7 +51,13 @@ class HoldingsPanel:
         
         # Live prices
         self.live_prices: Dict[int, float] = {}
-        
+
+        # Coalesce repeated refresh_display requests within one mainloop tick.
+        # ESI sync calls sync_from_orders + sync_from_esi_wallet back-to-back;
+        # both used to refresh, costing ~440-530ms of duplicate work per cycle.
+        # Also covers the holdings-freshen / ESI-sync race on the same drain.
+        self._refresh_scheduled = False
+
         # Create UI
         self.frame = ttk.Frame(parent)
         self.frame.pack(fill=tk.BOTH, expand=True)
@@ -278,8 +284,8 @@ class HoldingsPanel:
                         print(f"[Holdings] ESI sale: {type_name} x{tx.quantity} @ {tx.unit_price:.2f}")
         
         if results["buys_synced"] > 0 or results["sales_synced"] > 0:
-            self.refresh_display()
-        
+            self._schedule_refresh()
+
         return results
     
     def sync_from_orders(self, orders: List[dict]):
@@ -310,11 +316,36 @@ class HoldingsPanel:
                 buy_orders=buy_counts.get(type_id, 0),
                 sell_orders=sell_counts.get(type_id, 0)
             )
-        
-        self.refresh_display()
-    
+
+        self._schedule_refresh()
+
     # === Display ===
-    
+
+    def _schedule_refresh(self):
+        """Queue one refresh_display for the next mainloop idle tick.
+
+        Multiple callers within the same drain cycle coalesce to a single
+        refresh. Safe to call from the UI thread only.
+        """
+        if self._refresh_scheduled:
+            return
+        try:
+            if not self.frame.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        self._refresh_scheduled = True
+        self.frame.after_idle(self._do_scheduled_refresh)
+
+    def _do_scheduled_refresh(self):
+        self._refresh_scheduled = False
+        try:
+            if not self.frame.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        self.refresh_display()
+
     def refresh_display(self):
         """Refresh the holdings display.
 

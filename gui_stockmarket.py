@@ -290,7 +290,7 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
                     client.reset_for_new_loop()
                     await client.freshen_history_for_items(region_id, type_ids)
                 loop.run_until_complete(do_freshen())
-                submit(holdings_panel.refresh_display)
+                submit(holdings_panel._schedule_refresh)
             except Exception as e:
                 print(f"[StockMarket-{hub_key}] holdings ESI freshen failed: {e}")
             finally:
