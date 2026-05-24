@@ -185,12 +185,16 @@ class TradeTracker:
 
     def _save(self):
         """Save trades to file."""
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         try:
             trades_list = [asdict(t) for t in self.trades.values()]
             with open(TRADES_FILE, 'w') as f:
                 json.dump({"trades": trades_list}, f, indent=2)
         except IOError as e:
             print(f"Error saving trades: {e}")
+        _dur = _pt.perf_counter() - _pt0
+        print(f"[PerfTimer] trade_tracker._save dur={_dur*1000:.1f}ms trades={len(self.trades)}")
 
     def _index_trade(self, trade: TrackedTrade):
         """Add trade to type index."""

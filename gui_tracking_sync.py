@@ -161,11 +161,20 @@ class ESISyncManager:
         
         # Get seconds until cache expires
         wait_seconds = self.wallet.get_seconds_until_refresh()
-        
-        # If no expiry known or already expired, use default interval (5 min)
+
         if wait_seconds <= 0:
-            wait_seconds = 300  # 5 minutes default
-        
+            # No expiry yet known (bootstrap, first sync of the session). Use
+            # a short wait so the first sync fires quickly and populates the
+            # cache; subsequent schedules fall into the floor branch below.
+            wait_seconds = 60
+        else:
+            # Floor at 20 minutes: matches the NPC Sales tracker's update
+            # cadence and aligns with the wallet transactions endpoint's
+            # 1-hour ESI cache (polling more often returns the same data).
+            MIN_REFRESH_SECONDS = 1200
+            if wait_seconds < MIN_REFRESH_SECONDS:
+                wait_seconds = MIN_REFRESH_SECONDS
+
         # Start countdown
         self._start_countdown(int(wait_seconds))
     
@@ -255,14 +264,23 @@ class ESISyncManager:
                     print(f"  Got {len(self.market_orders_cache)} orders")
             
             def update():
+                import time as _pt
+                _pt0 = _pt.perf_counter()
+                _step_sync_esi = 0.0
+                _step_orders_synced = 0.0
+                _step_wallet_synced = 0.0
+                _step_pnl_synced = 0.0
+                _step_refresh_complete = 0.0
                 self.is_refreshing = False
                 if self.refresh_btn:
                     self.refresh_btn.configure(state="normal")
-                
+
                 if success:
                     # Sync ESI data with tracked trades
+                    _ts = _pt.perf_counter()
                     sync_results = self.sync_esi_to_trades()
-                    
+                    _step_sync_esi = _pt.perf_counter() - _ts
+
                     # Sync orders to stock market holdings
                     if self.on_orders_synced and self.wallet and self.hub_key:
                         hub_config = TRADE_HUBS.get(self.hub_key)
@@ -277,12 +295,16 @@ class ESISyncManager:
                                 }
                                 for o in self.wallet.orders
                             ]
+                            _ts = _pt.perf_counter()
                             self.on_orders_synced(orders_for_holdings, hub_config["region_id"])
-                    
+                            _step_orders_synced = _pt.perf_counter() - _ts
+
                     # Sync wallet transactions to stock market holdings
                     if self.on_wallet_synced and self.wallet:
                         try:
+                            _ts = _pt.perf_counter()
                             self.on_wallet_synced(self.wallet)
+                            _step_wallet_synced = _pt.perf_counter() - _ts
                         except Exception as e:
                             print(f"[ESISync] Holdings wallet sync error: {e}")
 
@@ -302,7 +324,9 @@ class ESISyncManager:
                                 }
                                 for o in self.wallet.orders
                             ]
+                            _ts = _pt.perf_counter()
                             self.on_pnl_synced(char_orders_for_pnl, self.wallet)
+                            _step_pnl_synced = _pt.perf_counter() - _ts
                         except Exception as e:
                             print(f"[ESISync] P&L sync error: {e}")
 
@@ -319,14 +343,26 @@ class ESISyncManager:
                     self.set_status(" | ".join(status_parts))
                 else:
                     self.set_status("ESI refresh failed")
-                
+
                 # Notify UI to refresh display
                 if self.on_refresh_complete:
+                    _ts = _pt.perf_counter()
                     self.on_refresh_complete()
-                
+                    _step_refresh_complete = _pt.perf_counter() - _ts
+
                 # Schedule next auto-refresh
                 if self.auto_refresh_enabled:
                     self.schedule_auto_refresh()
+
+                _pt_total = _pt.perf_counter() - _pt0
+                print(
+                    f"[PerfTimer] ESISync.update_closure total={_pt_total*1000:.0f}ms "
+                    f"sync_esi_to_trades={_step_sync_esi*1000:.0f}ms "
+                    f"on_orders_synced={_step_orders_synced*1000:.0f}ms "
+                    f"on_wallet_synced={_step_wallet_synced*1000:.0f}ms "
+                    f"on_pnl_synced={_step_pnl_synced*1000:.0f}ms "
+                    f"on_refresh_complete={_step_refresh_complete*1000:.0f}ms"
+                )
             
             if self.frame:
                 submit(update)

@@ -301,10 +301,12 @@ class PriceGraphDialog:
     
     def _create_graphs(self):
         """Create graphs for each time period."""
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         if not self.history:
             self._show_error("No price history available")
             return
-        
+
         # Parse dates once
         parsed_history = []
         for record in self.history:
@@ -319,31 +321,43 @@ class PriceGraphDialog:
                 })
             except (ValueError, KeyError):
                 continue
-        
+
         if not parsed_history:
             self._show_error("No valid price data")
             return
-        
+
         # Sort by date
         parsed_history.sort(key=lambda x: x['date'])
-        
+        _step_parse = _pt.perf_counter() - _pt0
+
         # Create each panel's graph
         now = datetime.now()
+        _panel_timings = []
         for label, days in TIME_PERIODS:
             cutoff = now - timedelta(days=days)
             filtered = [r for r in parsed_history if r['date'] >= cutoff]
-            
+
             panel = self.panels.get(label)
             if panel:
                 if filtered:
+                    _ts = _pt.perf_counter()
                     panel.create_graph(
                         filtered,
                         self.type_name,
                         self.floor,
                         self.ceiling
                     )
+                    _panel_dur = _pt.perf_counter() - _ts
+                    _panel_timings.append(f"{label}({len(filtered)}pts)={_panel_dur*1000:.0f}ms")
                 else:
                     panel.show_no_data()
+                    _panel_timings.append(f"{label}(empty)")
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] graphing._create_graphs item={self.type_name} "
+            f"total={_pt_total*1000:.0f}ms history_records={len(parsed_history)} "
+            f"parse={_step_parse*1000:.0f}ms panels=[{', '.join(_panel_timings)}]"
+        )
     
     def _show_error(self, message: str):
         """Show error in all panels."""
@@ -402,10 +416,15 @@ class GraphPanel:
         ceiling: Optional[float],
     ):
         """Create the matplotlib graph."""
+        import time as _pt
+        _pt0 = _pt.perf_counter()
+        self._perf_start = _pt0
+        self._perf_module = _pt
+        self._perf_points = len(data)
         # Remove loading label
         if hasattr(self, 'loading_label') and self.loading_label.winfo_exists():
             self.loading_label.destroy()
-        
+
         if len(data) < 2:
             ttk.Label(self.frame, text="Insufficient data points").pack(expand=True)
             return
@@ -490,11 +509,22 @@ class GraphPanel:
         # Tight layout
         self.fig.autofmt_xdate()
         self.fig.tight_layout()
-        
+
         # Create canvas
+        _pt = self._perf_module
+        _ts_layout = _pt.perf_counter()
+        _build_dur = _ts_layout - self._perf_start
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.frame)
+        _ts_canvas = _pt.perf_counter()
         self.canvas.draw()
+        _draw_dur = _pt.perf_counter() - _ts_canvas
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        _total_dur = _pt.perf_counter() - self._perf_start
+        print(
+            f"[PerfTimer] GraphPanel.create_graph title={self.title} "
+            f"total={_total_dur*1000:.0f}ms points={self._perf_points} "
+            f"figure_build={_build_dur*1000:.0f}ms canvas.draw={_draw_dur*1000:.0f}ms"
+        )
         
         # Setup hover annotation for price chart
         self.annotation = self.ax.annotate(

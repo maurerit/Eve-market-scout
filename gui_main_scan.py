@@ -57,22 +57,33 @@ class MainScanMixin:
 
     def _check_first_time_setup(self) -> bool:
         """Check if scanner has minimum data. Returns True if ready to scan.
-        
+
         Scanner only needs 30 days of recent data. This is a quick download
         (~60MB, 1-2 minutes) compared to full 3-year archive.
-        
+
         Stock Market features will prompt for full history separately.
         """
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         from market_history import get_market_history_db
         from gui_migration import check_has_recent_data, ensure_scanner_data
-        
+
         try:
+            _ts = _pt.perf_counter()
             db = get_market_history_db()
-            
+            _step_db = _pt.perf_counter() - _ts
+
             # Check if we have enough recent data for scanner
-            if check_has_recent_data(db):
+            _ts = _pt.perf_counter()
+            ok = check_has_recent_data(db)
+            _step_check = _pt.perf_counter() - _ts
+            print(
+                f"[PerfTimer] _check_first_time_setup total={(_pt.perf_counter()-_pt0)*1000:.0f}ms "
+                f"get_db={_step_db*1000:.0f}ms check_has_recent_data={_step_check*1000:.0f}ms ready={ok}"
+            )
+            if ok:
                 return True
-                
+
         except Exception as e:
             print(f"[Setup] Error checking database: {e}")
         
@@ -258,6 +269,8 @@ class MainScanMixin:
 
     def _display_deals(self, scan_result, is_auto=False):
         """Display deals and update watchlist with local hub orders."""
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         # Handle CrossHubScanResult (different display format)
         if isinstance(scan_result, CrossHubScanResult):
             self._display_crosshub_deals(scan_result, is_auto)
@@ -303,24 +316,32 @@ class MainScanMixin:
         
         # Update watchlist with current local hub prices
         # Always call even if empty - clears stale prices for items with no listings
+        _ts = _pt.perf_counter()
         if self.watchlist_manager:
             self.watchlist_manager.update_from_local_orders(watchlist_orders)
-        
+        _step_watchlist = _pt.perf_counter() - _ts
+
         # Update NPC orders with current local hub prices
+        _ts = _pt.perf_counter()
         if self.npc_orders_manager:
             self.npc_orders_manager.update_from_local_orders(watchlist_orders)
-        
+        _step_npc = _pt.perf_counter() - _ts
+
         # Update Stock Market tab with current local hub prices
+        _ts = _pt.perf_counter()
         if self.stock_market_tab:
             sell_config = get_hub_config(self.sell_station)
             self.stock_market_tab.update_from_local_orders(watchlist_orders, sell_config["region_id"])
             # Material filter tracking now handled by HubPanel.refresh_display()
-        
+        _step_stockmarket = _pt.perf_counter() - _ts
+
         # Display categorized deals (returns count of new alert-worthy deals: steals + low_risk)
+        _ts = _pt.perf_counter()
         new_alert_count = self.deals_manager.display_categorized_deals(
-            steals, low_risk, high_risk, 
+            steals, low_risk, high_risk,
             self.previous_deal_ids, is_auto
         )
+        _step_deals = _pt.perf_counter() - _ts
         
         # Also check watchlist for alerts
         watchlist_alerts = self.watchlist_manager.get_alert_items() if self.watchlist_manager else []
@@ -340,21 +361,36 @@ class MainScanMixin:
         # Update count label with breakdown
         total = len(steals) + len(low_risk) + len(high_risk)
         self.count_label.configure(text=f"Deals: {total} (S:{len(steals)} L:{len(low_risk)} H:{len(high_risk)})")
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] _display_deals total={_pt_total*1000:.0f}ms deals={total} orders={len(watchlist_orders)} "
+            f"watchlist={_step_watchlist*1000:.0f}ms "
+            f"npc={_step_npc*1000:.0f}ms "
+            f"stockmarket={_step_stockmarket*1000:.0f}ms "
+            f"deals_display={_step_deals*1000:.0f}ms"
+        )
 
     def _display_crosshub_deals(self, scan_result: CrossHubScanResult, is_auto=False):
         """Display cross-hub deals with dual-row format."""
+        import time as _pt
+        _pt0 = _pt.perf_counter()
+        _step_stockmarket = 0.0
+        _step_crosshub_display = 0.0
+        _step_demand = 0.0
         low_risk = scan_result.low_risk
         high_risk = scan_result.high_risk
-        
+
         # Store deals
         self.deals = low_risk + high_risk
-        
+
         # Update Stock Market tab with sell station prices
         if scan_result.sell_station_orders and self.stock_market_tab:
             sell_config = get_hub_config(self.sell_station)
+            _ts = _pt.perf_counter()
             self.stock_market_tab.update_from_local_orders(scan_result.sell_station_orders, sell_config["region_id"])
+            _step_stockmarket = _pt.perf_counter() - _ts
             # Material filter tracking now handled by HubPanel.refresh_display()
-        
+
         # Configure trees for crosshub display if not already done
         if not hasattr(self, '_crosshub_trees_configured'):
             self.crosshub_display_manager.configure_tree_for_crosshub(
@@ -364,36 +400,48 @@ class MainScanMixin:
                 self.deals_manager.high_risk_tree
             )
             self._crosshub_trees_configured = True
-        
+
         # Display using crosshub manager's dual-row format
+        _ts = _pt.perf_counter()
         new_alert_count = self.crosshub_display_manager.display_crosshub_deals(
             low_risk, high_risk,
             self.deals_manager.low_risk_tree,
             self.deals_manager.high_risk_tree,
             self.previous_deal_ids, is_auto
         )
+        _step_crosshub_display = _pt.perf_counter() - _ts
 
         # Demand / Restock — populate from the same scan result.
         if hasattr(self, 'demand_tab_manager') and self.demand_tab_manager:
             demand_rows = getattr(scan_result, 'demand_rows', None) or []
+            _ts = _pt.perf_counter()
             self.demand_tab_manager.display_rows(demand_rows)
-        
+            _step_demand = _pt.perf_counter() - _ts
+
         # Update Steals tab to show empty (cross-hub doesn't have steals)
         for item in self.deals_manager.steals_tree.get_children():
             self.deals_manager.steals_tree.delete(item)
         self.deals_manager.notebook.tab(2, text="Steals (0)")
-        
+
         # Handle alerts
         if new_alert_count > 0 and is_auto and self.sound_enabled:
             self._play_alert()
             self.status_label.configure(text=f"Found {new_alert_count} new deal(s)!")
-        
+
         # Update previous deal IDs
         self.previous_deal_ids = self.crosshub_display_manager.get_current_deal_ids()
-        
+
         # Update count label
         total = len(low_risk) + len(high_risk)
         self.count_label.configure(text=f"Cross-Hub Deals: {total} (L:{len(low_risk)} H:{len(high_risk)})")
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] _display_crosshub_deals total={_pt_total*1000:.0f}ms deals={total} "
+            f"sell_orders={len(scan_result.sell_station_orders) if scan_result.sell_station_orders else 0} "
+            f"stockmarket={_step_stockmarket*1000:.0f}ms "
+            f"crosshub_display={_step_crosshub_display*1000:.0f}ms "
+            f"demand={_step_demand*1000:.0f}ms"
+        )
 
     def _show_error(self, message: str):
         """Show error dialog."""

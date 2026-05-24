@@ -432,21 +432,59 @@ class TrackingTabManager:
         reflect the latest volume_remain/price), then run the underbid check
         against the resulting active listings.
         """
+        import time as _pt
+        _pt0 = _pt.perf_counter()
+        _step_inv_sync = 0.0
+        _step_underbid = 0.0
+        _step_refresh = 0.0
         try:
             from calculate import get_broker_fee_rate
             # get_broker_fee_rate returns a percentage (e.g. 1.48); convert to
             # decimal fraction for the orphan-fee estimator.
             rate = get_broker_fee_rate(self.skills) / 100.0
+            _ts = _pt.perf_counter()
             results = sync_inventory_from_wallet(
                 self.inventory, self.wallet, broker_fee_rate=rate
             )
+            _step_inv_sync = _pt.perf_counter() - _ts
             if any(results.values()):
                 print(f"[ScannerInventory] sync: {results}")
         except Exception as e:
             print(f"[ScannerInventory] sync error: {e}")
 
+        _ts = _pt.perf_counter()
         self._run_underbid_check()
+        _step_underbid = _pt.perf_counter() - _ts
+        _ts = _pt.perf_counter()
         self._refresh_display()
+        _step_refresh = _pt.perf_counter() - _ts
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] _on_esi_refresh total={_pt_total*1000:.0f}ms "
+            f"sync_inventory_from_wallet={_step_inv_sync*1000:.0f}ms "
+            f"_run_underbid_check={_step_underbid*1000:.0f}ms "
+            f"_refresh_display={_step_refresh*1000:.0f}ms"
+        )
+
+        # Push the fresh wallet into the NPC Orders sales tracker so it can
+        # ingest any new sell-side transactions for items it watches.
+        cb = getattr(self, "_npc_orders_wallet_hook", None)
+        wallet_tx_count = len(self.wallet.transactions) if self.wallet else "no-wallet"
+        print(f"[NPCSalesDiag] _on_esi_refresh: hook={'wired' if cb else 'MISSING'}, "
+              f"wallet_transactions={wallet_tx_count}")
+        if cb and self.wallet is not None:
+            try:
+                cb(self.wallet)
+            except Exception as e:
+                print(f"[NPCSales] hook error: {e}")
+
+    def set_npc_orders_wallet_hook(self, callback):
+        """Register a callback fired with the fresh wallet after each refresh.
+
+        Used by NPCOrdersTabManager.on_wallet_refresh. Decoupled here so this
+        module doesn't need to know about NPC Orders.
+        """
+        self._npc_orders_wallet_hook = callback
 
     def _run_underbid_check(self):
         """Run the underbid check against inventory listings.
@@ -650,15 +688,21 @@ class TrackingTabManager:
 
     def _refresh_display(self):
         """Refresh the inventory list and summary (Step 3: reads from inventory)."""
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         all_entries = self.inventory.all_entries()
 
         # Update summary panel from inventory.
         wallet_balance = self.wallet.balance if self.wallet else 0
+        _ts = _pt.perf_counter()
         self.summary_panel.update_from_inventory(all_entries, wallet_balance)
+        _step_summary = _pt.perf_counter() - _ts
 
         # Refresh treeview
+        _ts = _pt.perf_counter()
         for item in self.trades_tree.get_children():
             self.trades_tree.delete(item)
+        _step_tree_clear = _pt.perf_counter() - _ts
 
         filter_type = self.filter_var.get()
         if filter_type == "active":
@@ -678,8 +722,18 @@ class TrackingTabManager:
 
         # Sort by type_name for a stable default order.
         entries.sort(key=lambda e: e.type_name or "")
+        _ts = _pt.perf_counter()
         for entry in entries:
             self._insert_inventory_entry(entry)
+        _step_tree_insert = _pt.perf_counter() - _ts
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] gui_tracking._refresh_display total={_pt_total*1000:.0f}ms "
+            f"entries={len(entries)} "
+            f"summary_panel={_step_summary*1000:.0f}ms "
+            f"tree_clear={_step_tree_clear*1000:.0f}ms "
+            f"tree_insert={_step_tree_insert*1000:.0f}ms"
+        )
 
     def _insert_inventory_entry(self, entry):
         """Insert one InventoryEntry as a row."""

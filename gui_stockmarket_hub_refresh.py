@@ -60,11 +60,15 @@ class HubPanelRefreshMixin:
 
         Returns True if the cache had sell orders to apply.
         """
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         entry = order_cache._order_cache.get(self.region_id, {})
         orders = entry.get("orders", [])
         if not orders:
+            print(f"[PerfTimer] render_from_cache hub={getattr(self, 'hub_key', '?')} orders=0 total=0ms")
             return False
         prices: dict = {}
+        _ts = _pt.perf_counter()
         for order in orders:
             if order.get("is_buy_order"):
                 continue
@@ -72,9 +76,20 @@ class HubPanelRefreshMixin:
             price = order["price"]
             if type_id not in prices or price < prices[type_id]:
                 prices[type_id] = price
+        _step_scan = _pt.perf_counter() - _ts
+        _ts = _pt.perf_counter()
         if prices:
             self.update_live_prices(prices)
+        _step_apply = _pt.perf_counter() - _ts
+        _ts = _pt.perf_counter()
         self.update_refresh_labels(order_cache)
+        _step_labels = _pt.perf_counter() - _ts
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] render_from_cache hub={getattr(self, 'hub_key', '?')} "
+            f"total={_pt_total*1000:.0f}ms orders={len(orders)} prices={len(prices)} "
+            f"scan={_step_scan*1000:.0f}ms apply={_step_apply*1000:.0f}ms labels={_step_labels*1000:.0f}ms"
+        )
         return bool(prices)
 
     def update_refresh_labels(self, order_cache):

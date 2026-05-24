@@ -135,7 +135,10 @@ class EditItemDialog(MaxBuyCalcMixin, tk.Toplevel):
 
     def __init__(self, parent, item: "WatchlistItem", callback: Callable,
                  get_client: Callable = None, get_skills: Callable = None,
-                 region_id: int = None, show_max_buy_calc: bool = False):
+                 region_id: int = None, show_max_buy_calc: bool = False,
+                 nearest_station_mode: bool = False,
+                 get_origin_system: Callable = None,
+                 get_esi_standings: Callable = None):
         super().__init__(parent)
         self.item = item
         self.callback = callback
@@ -143,10 +146,15 @@ class EditItemDialog(MaxBuyCalcMixin, tk.Toplevel):
         self.get_skills = get_skills
         self.region_id = region_id
         self.show_max_buy_calc = show_max_buy_calc
-        
+
         # MaxBuyCalcMixin expects selected_item like AddItemDialog uses
         self.selected_item = {"type_id": item.type_id, "name": item.name}
         self._init_calc_state()
+        # Nearest-station overrides applied after _init_calc_state and before
+        # _create_widgets so the new labels get built when needed.
+        self.nearest_station_mode = nearest_station_mode
+        self.get_origin_system = get_origin_system
+        self.get_esi_standings = get_esi_standings
 
         self.title(f"Edit: {item.name}")
         # Wider + taller when calc section is shown

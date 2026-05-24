@@ -150,10 +150,12 @@ class PnLManager:
     
     def _save(self):
         """Save P&L data to disk."""
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         try:
             data = {
                 "entries": {
-                    str(tid): asdict(entry) 
+                    str(tid): asdict(entry)
                     for tid, entry in self.entries.items()
                 },
                 "order_cache": {
@@ -163,12 +165,14 @@ class PnLManager:
                 "hub_key": self.hub_key,
                 "last_saved": datetime.now().isoformat(),
             }
-            
+
             self.filepath.parent.mkdir(parents=True, exist_ok=True)
             with open(self.filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"[PnL] Error saving {self.hub_key}: {e}")
+        _dur = _pt.perf_counter() - _pt0
+        print(f"[PerfTimer] stock_pnl._save hub={self.hub_key} dur={_dur*1000:.1f}ms entries={len(self.entries)} orders={len(self.order_cache)}")
     
     def _get_or_create_entry(self, type_id: int, type_name: str) -> PnLEntry:
         """Get existing entry or create new one."""

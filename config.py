@@ -7,7 +7,7 @@ The values below are kept for reference/documentation only.
 # =============================================================================
 # APP VERSION - Update this single line to change version everywhere
 # =============================================================================
-APP_VERSION = "2.8 live"
+APP_VERSION = "2.9 live"
 
 # Region IDs
 JITA_REGION_ID = 10000002  # The Forge
@@ -88,6 +88,18 @@ def get_enabled_hubs() -> list[tuple[str, str]]:
         if config["enabled"]:
             result.append((key, config["name"]))
     return result
+
+
+def station_id_to_hub_key(station_id: int) -> str | None:
+    """Reverse-lookup a station_id to a hub_key.
+
+    Covers built-in TRADE_HUBS and any custom stations already loaded into it.
+    Returns None for player structures or otherwise unknown station_ids.
+    """
+    for key, cfg in TRADE_HUBS.items():
+        if cfg.get("station_id") == station_id:
+            return key
+    return None
 
 
 def register_custom_station(station_dict: dict):

@@ -98,6 +98,8 @@ class HoldingsManager:
     
     def _save(self):
         """Save holdings to disk."""
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         try:
             data = {
                 "holdings": {
@@ -106,11 +108,13 @@ class HoldingsManager:
                 },
                 "last_saved": datetime.now().isoformat(),
             }
-            
+
             with open(self.filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"[Holdings] Error saving: {e}")
+        _dur = _pt.perf_counter() - _pt0
+        print(f"[PerfTimer] HoldingsManager._save dur={_dur*1000:.1f}ms holdings={len(self.holdings)}")
     
     def add_watched(self, type_id: int, type_name: str) -> HoldingEntry:
         """Add an item to watch list."""

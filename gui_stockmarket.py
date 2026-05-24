@@ -223,25 +223,45 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
     _HOLDINGS_FRESHEN_MIN_INTERVAL = 60  # seconds; rapid tab-switch debounce
 
     def _on_hub_tab_changed(self, event=None):
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         hub_key = self._get_current_hub_key()
         if not hub_key or hub_key == self._active_hub_key:
             return
         self._active_hub_key = hub_key
         self.settings.active_hub_key = hub_key
+        _ts = _pt.perf_counter()
         save_settings(self.settings)
+        _step_save_settings = _pt.perf_counter() - _ts
         panel = self.hub_panels.get(hub_key)
         if not panel:
             return
         client = self.get_client() if self.get_client else None
+        _step_render_cache = 0.0
         if client:
+            _ts = _pt.perf_counter()
             panel.render_from_cache(client.order_cache)
+            _step_render_cache = _pt.perf_counter() - _ts
+        _step_first_render = 0.0
         if not getattr(panel, "_has_rendered_once", False):
+            _ts = _pt.perf_counter()
             panel.refresh_display_async()
+            _step_first_render = _pt.perf_counter() - _ts
             panel._has_rendered_once = True
         # Close the 1-4 day SQLite lag on holdings by force-pulling ESI
         # history for tracked items in this region. Refreshes the holdings
         # panel once fresh data lands.
+        _ts = _pt.perf_counter()
         self._freshen_holdings_for_hub(hub_key, panel, client)
+        _step_freshen_spawn = _pt.perf_counter() - _ts
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] _on_hub_tab_changed hub={hub_key} total={_pt_total*1000:.0f}ms "
+            f"save_settings={_step_save_settings*1000:.0f}ms "
+            f"render_from_cache={_step_render_cache*1000:.0f}ms "
+            f"first_render_kick={_step_first_render*1000:.0f}ms "
+            f"freshen_spawn={_step_freshen_spawn*1000:.0f}ms"
+        )
 
     def _freshen_holdings_for_hub(self, hub_key, panel, client):
         if not client:
@@ -341,47 +361,69 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
     
     def update_from_local_orders(self, orders: List[dict], region_id: Optional[int] = None):
         """Update prices from scan results.
-        
+
         Args:
             orders: List of market orders from scan
             region_id: Region the orders are from (if known)
         """
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         if not orders:
             print(f"[StockMarket] update_from_local_orders: No orders provided")
             return
-        
+
         # Build price dict: type_id -> lowest sell price
+        _ts = _pt.perf_counter()
         prices: Dict[int, float] = {}
-        
+
         for order in orders:
             if order.get("is_buy_order"):
                 continue
-            
+
             type_id = order["type_id"]
             price = order["price"]
-            
+
             if type_id not in prices or price < prices[type_id]:
                 prices[type_id] = price
-        
+        _step_scan = _pt.perf_counter() - _ts
+
         if not prices:
             print(f"[StockMarket] update_from_local_orders: No sell orders found in {len(orders)} orders")
             return
-        
+
         print(f"[StockMarket] update_from_local_orders: {len(prices)} live prices from region {region_id}")
-        
+
         # If region specified, update that hub only
+        _ts = _pt.perf_counter()
+        _hubs_updated = 0
         if region_id:
             for hub_key, panel in self.hub_panels.items():
                 config = get_hub_config(hub_key)
                 if config["region_id"] == region_id:
                     print(f"[StockMarket] -> Updating {hub_key} hub")
                     panel.update_live_prices(prices)
+                    _hubs_updated = 1
+                    _step_apply = _pt.perf_counter() - _ts
+                    _pt_total = _pt.perf_counter() - _pt0
+                    print(
+                        f"[PerfTimer] StockMarketTab.update_from_local_orders "
+                        f"total={_pt_total*1000:.0f}ms orders={len(orders)} prices={len(prices)} hubs_updated={_hubs_updated} "
+                        f"scan_orders={_step_scan*1000:.0f}ms apply_live_prices={_step_apply*1000:.0f}ms"
+                    )
                     return
-        
+
         # Otherwise update all hubs (legacy behavior)
         print(f"[StockMarket] -> Updating all hubs (no region specified)")
         for panel in self.hub_panels.values():
             panel.update_live_prices(prices)
+            _hubs_updated += 1
+        _step_apply = _pt.perf_counter() - _ts
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] StockMarketTab.update_from_local_orders "
+            f"total={_pt_total*1000:.0f}ms orders={len(orders)} prices={len(prices)} hubs_updated={_hubs_updated} "
+            f"scan_orders={_step_scan*1000:.0f}ms apply_live_prices={_step_apply*1000:.0f}ms"
+        )
     
     def sync_orders_to_holdings(self, orders: List[dict], region_id: int):
         """Sync ESI orders to holdings for appropriate hub."""
@@ -430,6 +472,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         skip recording this refresh; try again next time. After JOURNAL_AGE_LIMIT_DAYS,
         fall back to a skill-based estimate (journal retention ~30 days).
         """
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         if not char_orders and not wallet:
             return
 
@@ -577,7 +621,14 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
                 print(f"[StockMarket] P&L sync error for {hub_key}: {e}")
                 import traceback
                 traceback.print_exc()
-    
+        _pt_total = _pt.perf_counter() - _pt0
+        _hub_count = len(self.hub_panels)
+        _order_count = len(char_orders) if char_orders else 0
+        print(
+            f"[PerfTimer] sync_orders_to_pnl total={_pt_total*1000:.0f}ms "
+            f"hubs={_hub_count} char_orders={_order_count}"
+        )
+
     def fetch_history_for_region(self, region_id: int):
         """Fetch market history for all profiled items in a region.
         

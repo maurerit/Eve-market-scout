@@ -626,27 +626,32 @@ class WatchlistTabManager:
         Update watchlist prices from local hub market orders.
         Called after each scan with the raw order data.
         """
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         if not self.watchlist:
             return
-        
+
         # Build lookup: type_id -> (lowest sell price, quantity at that price)
+        _ts = _pt.perf_counter()
         sell_data = {}  # type_id -> {"price": float, "qty": int}
         for order in orders:
             if order.get("is_buy_order"):
                 continue  # Skip buy orders
-            
+
             type_id = order["type_id"]
             price = order["price"]
             volume = order.get("volume_remain", 0)
-            
+
             if type_id not in sell_data or price < sell_data[type_id]["price"]:
                 # New lowest price - reset quantity
                 sell_data[type_id] = {"price": price, "qty": volume}
             elif price == sell_data[type_id]["price"]:
                 # Same price - accumulate quantity
                 sell_data[type_id]["qty"] += volume
-        
+        _step_scan = _pt.perf_counter() - _ts
+
         # Update watchlist items
+        _ts = _pt.perf_counter()
         updated = 0
         for type_id, item in self.watchlist.items():
             if type_id in sell_data:
@@ -658,9 +663,18 @@ class WatchlistTabManager:
                 # Use qty=0 to distinguish "no listings" from "never scanned"
                 item.current_price = None
                 item.current_qty = 0
-        
+        _step_apply = _pt.perf_counter() - _ts
+
         # Refresh display to show new prices and trigger alerts
+        _ts = _pt.perf_counter()
         self._refresh_display()
+        _step_refresh = _pt.perf_counter() - _ts
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] WatchlistTabManager.update_from_local_orders "
+            f"total={_pt_total*1000:.0f}ms orders={len(orders)} watchlist_items={len(self.watchlist)} "
+            f"scan_orders={_step_scan*1000:.0f}ms apply={_step_apply*1000:.0f}ms refresh_display={_step_refresh*1000:.0f}ms"
+        )
         
         # Check for alerts
         alerts = self.get_alert_items()

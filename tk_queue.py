@@ -13,6 +13,7 @@ Setup in main.py (once, before mainloop):
 """
 
 import queue
+import time
 
 
 _queue = queue.Queue()
@@ -20,7 +21,7 @@ _queue = queue.Queue()
 
 def submit(func):
     """Submit a function to run on the main thread.
-    
+
     Thread-safe. Can be called from any thread.
     The function will execute during the next poll cycle (~50ms).
     """
@@ -29,15 +30,29 @@ def submit(func):
 
 def drain():
     """Drain and execute all pending tasks. Call from main thread only."""
+    _cycle_t0 = time.perf_counter()
+    _count = 0
+    _slowest_name = None
+    _slowest_dur = 0.0
     while True:
         try:
             func = _queue.get_nowait()
+            _t0 = time.perf_counter()
             try:
                 func()
             except Exception as e:
                 print(f"[TkQueue] Error executing task: {e}")
+            _dur = time.perf_counter() - _t0
+            _count += 1
+            if _dur > _slowest_dur:
+                _slowest_dur = _dur
+                _slowest_name = getattr(func, "__qualname__", None) or getattr(func, "__name__", None) or repr(func)
         except queue.Empty:
             break
+    _cycle_dur = time.perf_counter() - _cycle_t0
+    # Only log notable cycles to avoid 20-per-second log spam from idle drains
+    if _cycle_dur > 0.050 or _count > 5:
+        print(f"[PerfTimer] tk_queue.drain count={_count} total={_cycle_dur*1000:.0f}ms slowest={_slowest_name}({_slowest_dur*1000:.0f}ms)")
 
 
 def start_polling(root, interval_ms=50):

@@ -180,9 +180,21 @@ class RiskCategoryPanel:
     
     def _sort_by(self, column: str):
         """Sort treeview by column using nested sort."""
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         self.sort_manager.on_column_click(column)
+        _t1 = _pt.perf_counter()
         self.sort_manager.apply_sort(self.tree)
+        _t2 = _pt.perf_counter()
         self.sort_manager.update_headers(self.tree, self.col_titles)
+        _pt_total = _pt.perf_counter() - _pt0
+        _rows = len(self.tree.get_children())
+        print(
+            f"[PerfTimer] RiskCategoryPanel._sort_by column={column} total={_pt_total*1000:.0f}ms rows={_rows} "
+            f"on_column_click={(_t1-_pt0)*1000:.0f}ms "
+            f"apply_sort={(_t2-_t1)*1000:.0f}ms "
+            f"update_headers={(_pt.perf_counter()-_t2)*1000:.0f}ms"
+        )
     
     def _on_right_click(self, event):
         """Show context menu."""
@@ -456,16 +468,21 @@ class RiskCategoryPanel:
                                  results are read from the session cache
                                  (populated by HubPanel.apply_material_filter).
         """
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         # Bump generation so any in-flight chunked insert from a prior
         # refresh aborts before writing into the freshly-cleared tree.
         self._populate_gen = getattr(self, "_populate_gen", 0) + 1
         gen = self._populate_gen
 
         # Clear existing
+        _ts = _pt.perf_counter()
         for item in self.tree.get_children():
             self.tree.delete(item)
+        _step_tree_clear = _pt.perf_counter() - _ts
 
         # Load leading indicators cache for this region (one query)
+        _ts = _pt.perf_counter()
         try:
             import leading_indicators_storage
             li_cache = leading_indicators_storage.load_for_region(
@@ -474,11 +491,14 @@ class RiskCategoryPanel:
         except Exception as e:
             print(f"[RiskPanel-{self.risk_level}] LI cache load error: {e}")
             li_cache = {}
+        _step_li_cache = _pt.perf_counter() - _ts
         self._li_cache_for_trend = li_cache
 
         # Get all profiles for this region
+        _ts = _pt.perf_counter()
         all_profiles = self.profiles.get_all_profiles()
         region_profiles = [p for p in all_profiles if p.region_id == self.region_id]
+        _step_profiles_filter = _pt.perf_counter() - _ts
 
         # Volume gate — drop items below the configured min_daily_volume.
         # Reads from StockMarketSettings (what the Settings dialog writes
@@ -496,10 +516,13 @@ class RiskCategoryPanel:
         # Filter by risk level
         items_to_show = []
 
+        _ts = _pt.perf_counter()
+        _yearly_stats_calls = 0
         for profile in region_profiles:
             if min_volume > 0 and getattr(profile, "avg_daily_volume", 0) < min_volume:
                 continue
             yearly_stats = self.profiles.get_yearly_stats(profile.type_id, self.region_id)
+            _yearly_stats_calls += 1
             trend = self._get_trend(yearly_stats, profile)
 
             if trend == self.risk_level:
@@ -513,6 +536,7 @@ class RiskCategoryPanel:
                     "trend_pct": trend_pct,
                     "trend_tag": trend_tag,
                 })
+        _step_per_item_loop = _pt.perf_counter() - _ts
 
         # Get SDE for names
         from sde_manager import get_sde_manager
@@ -589,7 +613,18 @@ class RiskCategoryPanel:
                 self.sort_manager.update_headers(self.tree, self.col_titles)
 
         self._chunked_insert(rows, gen, _on_done)
-    
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] RiskCategoryPanel.refresh_display hub={self.hub_key} risk={self.risk_level} "
+            f"total={_pt_total*1000:.0f}ms profiles={len(region_profiles)} rows={len(rows)} "
+            f"yearly_stats_calls={_yearly_stats_calls} "
+            f"tree_clear={_step_tree_clear*1000:.0f}ms "
+            f"li_cache={_step_li_cache*1000:.0f}ms "
+            f"profiles_filter={_step_profiles_filter*1000:.0f}ms "
+            f"per_item_loop={_step_per_item_loop*1000:.0f}ms "
+            f"(chunked_insert async, not in total)"
+        )
+
     def update_filters(self, filters: "StockMarketFilters"):
         """Update filters reference."""
         self.filters = filters

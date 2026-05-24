@@ -18,8 +18,11 @@ class AddItemDialog(MaxBuyCalcMixin, tk.Toplevel):
     """Dialog to add a new item to watchlist with search."""
 
     def __init__(self, parent, callback: Callable, get_client: Callable,
-                prefill: "WatchlistItem" = None, get_skills: Callable = None, 
-                region_id: int = None, show_max_buy_calc: bool = True):
+                prefill: "WatchlistItem" = None, get_skills: Callable = None,
+                region_id: int = None, show_max_buy_calc: bool = True,
+                nearest_station_mode: bool = False,
+                get_origin_system: Callable = None,
+                get_esi_standings: Callable = None):
         super().__init__(parent)
         self.callback = callback
         self.get_client = get_client
@@ -28,9 +31,14 @@ class AddItemDialog(MaxBuyCalcMixin, tk.Toplevel):
         self.selected_item = None  # {type_id, name}
         self.region_id = region_id or get_hub_config(DEFAULT_HUB)["region_id"]
         self.show_max_buy_calc = show_max_buy_calc
-        
+
         # Max buy calculator state (provided by MaxBuyCalcMixin)
         self._init_calc_state()
+        # Nearest-station overrides applied after _init_calc_state and before
+        # _create_widgets so the new labels get built when needed.
+        self.nearest_station_mode = nearest_station_mode
+        self.get_origin_system = get_origin_system
+        self.get_esi_standings = get_esi_standings
 
         self.title("Add to Watchlist")
         self.geometry("500x705" if show_max_buy_calc else "500x505")

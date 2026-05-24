@@ -189,6 +189,8 @@ class InventoryManager:
             print(f"[ScannerInventory] Error loading {path}: {e}")
 
     def _save(self):
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         path = _inventory_file(self.hub_key)
         try:
             data = {
@@ -199,6 +201,8 @@ class InventoryManager:
                 json.dump(data, f, indent=2)
         except IOError as e:
             print(f"[ScannerInventory] Error saving {path}: {e}")
+        _dur = _pt.perf_counter() - _pt0
+        print(f"[PerfTimer] scanner_inventory._save hub={self.hub_key} dur={_dur*1000:.1f}ms entries={len(self.entries)}")
 
     def _deserialize_entry(self, data: dict) -> InventoryEntry:
         """Rehydrate an entry from JSON, including nested dataclasses."""

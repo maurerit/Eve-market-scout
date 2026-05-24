@@ -171,13 +171,17 @@ class HoldingsPanel:
     
     def _sort_by(self, column: str):
         """Sort treeview by column."""
+        import time as _pt
+        _pt0 = _pt.perf_counter()
         if self.sort_column == column:
             self.sort_reverse = not self.sort_reverse
         else:
             self.sort_column = column
             self.sort_reverse = False
-        
+
         self.refresh_display()
+        _pt_total = _pt.perf_counter() - _pt0
+        print(f"[PerfTimer] HoldingsPanel._sort_by column={column} total={_pt_total*1000:.0f}ms (includes refresh_display)")
     
     def _on_double_click(self, event):
         """Handle double-click to open price history graph."""
@@ -313,20 +317,25 @@ class HoldingsPanel:
     
     def refresh_display(self):
         """Refresh the holdings display.
-        
+
         Material filter is applied via check_material_risk() at line 331
         which reads from the pre-populated session cache.  The cache is
         managed by HubPanel.apply_material_filter().
         """
+        import time as _pt
+        _pt0 = _pt.perf_counter()
+        _ts = _pt.perf_counter()
         self.tree.delete(*self.tree.get_children())
-        
+        _step_tree_clear = _pt.perf_counter() - _ts
+
         holdings = self.holdings.get_all()
         self.count_label.configure(text=f"{len(holdings)} holdings")
-        
+
         holdings = self.holdings.get_all()
         self.count_label.configure(text=f"{len(holdings)} holdings")
-        
+
         # Load leading indicators cache for this region (one query)
+        _ts = _pt.perf_counter()
         try:
             import leading_indicators_storage
             li_cache = leading_indicators_storage.load_for_region(
@@ -335,18 +344,21 @@ class HoldingsPanel:
         except Exception as e:
             print(f"[Holdings] LI cache load error: {e}")
             li_cache = {}
-        
+        _step_li_cache = _pt.perf_counter() - _ts
+
         # Prefetch 7d/30d history for ALL holdings in one SQLite query +
         # one ESI cache lookup. _calculate_trend reads from these dicts
         # instead of querying per-item. Mirrors gui_stockmarket_hub_refresh.
         from market_history import get_market_history_db
         holding_type_ids = [h.type_id for h in holdings]
+        _ts = _pt.perf_counter()
         sqlite_hist = (
             get_market_history_db().get_history_bulk(
                 self.region_id, holding_type_ids, days=30
             )
             if holding_type_ids else {}
         )
+        _step_history_bulk = _pt.perf_counter() - _ts
         esi_cache = {}
         if self.get_client:
             client = self.get_client()
@@ -356,6 +368,7 @@ class HoldingsPanel:
         # Build list with sort keys
         items_to_show = []
 
+        _ts = _pt.perf_counter()
         for entry in holdings:
             profile = self.profiles.get_computed_profile(entry.type_id, self.region_id)
             current_price = self.live_prices.get(entry.type_id, 0)
@@ -375,11 +388,13 @@ class HoldingsPanel:
                 "trend_tag": trend_tag,
                 "trend_pct": trend_pct,
             })
-        
+        _step_per_item = _pt.perf_counter() - _ts
+
         # Sort
         items_to_show = self._sort_holdings(items_to_show)
-        
+
         # Populate tree
+        _ts = _pt.perf_counter()
         for item in items_to_show:
             entry = item["entry"]
             profile = item["profile"]
@@ -441,7 +456,18 @@ class HoldingsPanel:
                 values=values,
                 tags=(trend_tag,)
             )
-    
+        _step_tree_insert = _pt.perf_counter() - _ts
+        _pt_total = _pt.perf_counter() - _pt0
+        print(
+            f"[PerfTimer] HoldingsPanel.refresh_display hub_region={self.region_id} "
+            f"total={_pt_total*1000:.0f}ms holdings={len(holdings)} "
+            f"tree_clear={_step_tree_clear*1000:.0f}ms "
+            f"li_cache={_step_li_cache*1000:.0f}ms "
+            f"history_bulk={_step_history_bulk*1000:.0f}ms "
+            f"per_item_loop={_step_per_item*1000:.0f}ms "
+            f"tree_insert={_step_tree_insert*1000:.0f}ms"
+        )
+
     def update_prices_only(self):
         """Update only price-dependent columns without rebuilding the treeview.
         

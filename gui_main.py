@@ -196,12 +196,33 @@ class MarketScoutGUI(MainControlsMixin, MainScanMixin):
         
         # Give NPC orders manager access to skills (for Add dialog max-buy calc)
         self.npc_orders_manager.set_skills_getter(self.tracking_manager.get_skills)
-        
+
+        # Wire NPC Orders' rep-aware max-buy calc: origin (current sell hub
+        # system) for the ≤6-jump filter, and live ESIStandings for looking
+        # up rep at whichever buyer-station the calc lands on.
+        self.npc_orders_manager.set_origin_system_getter(
+            lambda: get_hub_config(self.sell_station).get("system_id")
+        )
+        self.npc_orders_manager.set_esi_standings_getter(
+            lambda: self.tracking_manager.esi_standings
+        )
+
         # Set initial region for watchlist
         hub_config = get_hub_config(self.sell_station)
         self.watchlist_manager.set_region_id(hub_config["region_id"])
         self.npc_orders_manager.set_region_id(hub_config["region_id"])
-        
+
+        # Wire NPC Orders sales tracker to tracking_manager's wallet refresh.
+        # Sales ledger is per-character: point at the seller's file on startup;
+        # _update_character_display re-points it whenever auth changes.
+        self.tracking_manager.set_npc_orders_wallet_hook(
+            self.npc_orders_manager.on_wallet_refresh
+        )
+        if self.tracking_manager.auth.is_authenticated:
+            self.npc_orders_manager.set_seller_character(
+                self.tracking_manager.auth.seller_name
+            )
+
         # Update character display
         self._update_character_display()
         
@@ -454,8 +475,12 @@ class MarketScoutGUI(MainControlsMixin, MainScanMixin):
         if auth.is_authenticated:
             seller_name = auth.seller_name if hasattr(auth, 'seller_name') else auth.character_name
             self.seller_label.configure(text=f"Seller: {seller_name}")
+            if hasattr(self, 'npc_orders_manager') and self.npc_orders_manager:
+                self.npc_orders_manager.set_seller_character(seller_name)
         else:
             self.seller_label.configure(text="Seller: (not logged in)")
+            if hasattr(self, 'npc_orders_manager') and self.npc_orders_manager:
+                self.npc_orders_manager.set_seller_character("unknown")
         
         # Buyer (secondary) - only relevant for cross-hub
         if hasattr(auth, 'has_buyer') and auth.has_buyer:

@@ -5,12 +5,18 @@ The calc section is only built when self.show_max_buy_calc is True; calc methods
 early-return when the section was not built, so they are safe no-ops in that case.
 
 Host class contract (attributes the mixin reads):
-    self.show_max_buy_calc : bool
-    self.get_client        : Callable
-    self.get_skills        : Optional[Callable]
-    self.region_id         : int
-    self.selected_item     : dict with keys {"type_id", "name"}
-    self.price_under_var   : tk.StringVar
+    self.show_max_buy_calc    : bool
+    self.get_client           : Callable
+    self.get_skills           : Optional[Callable]
+    self.region_id            : int
+    self.selected_item        : dict with keys {"type_id", "name"}
+    self.price_under_var      : tk.StringVar
+
+  Optional, only consulted when nearest_station_mode is True (NPC Orders flow):
+    self.nearest_station_mode : bool  -- enables jump-filter + buyer-station rep
+    self.get_origin_system    : () -> int system_id (origin for jump filter)
+    self.get_esi_standings    : () -> ESIStandings (rep against any corp/faction)
+    self.max_jumps            : int  -- defaults to 6
 """
 
 import tkinter as tk
@@ -18,7 +24,9 @@ from tkinter import ttk
 import asyncio
 import threading
 
-from calculate import get_broker_fee_rate, get_sales_tax_rate
+from calculate import (
+    get_broker_fee_rate, get_sales_tax_rate, TradingSkills, DEFAULT_SKILLS,
+)
 from config import REQUEST_TIMEOUT
 from tk_queue import submit
 
@@ -30,6 +38,13 @@ class MaxBuyCalcMixin:
         """Initialize calc state. Call from host __init__."""
         self.best_buy_price = None
         self.calculated_max_buy = None
+        # Nearest-station mode (NPC Orders flow). Host overrides AFTER
+        # _init_calc_state and BEFORE _build_max_buy_calc_section. Defaults
+        # keep the original watchlist behavior unchanged.
+        self.nearest_station_mode = False
+        self.get_origin_system = None
+        self.get_esi_standings = None
+        self.max_jumps = 6
         # UI handles set in _build_max_buy_calc_section; left as None so
         # _calc_ui_ready() can detect "section not built" cleanly.
         self.calc_btn = None
@@ -37,6 +52,10 @@ class MaxBuyCalcMixin:
         self.best_buy_label = None
         self.max_buy_label = None
         self.use_price_btn = None
+        self.nearest_station_label = None
+        self.nearest_distance_label = None
+        self.nearest_standings_label = None
+        self.nearest_tax_label = None
 
     def _calc_ui_ready(self) -> bool:
         """True only when the calc UI has actually been built."""
@@ -72,6 +91,33 @@ class MaxBuyCalcMixin:
         self.best_buy_label = ttk.Label(calc_results, text="--", font=("Segoe UI", 9))
         self.best_buy_label.pack(anchor=tk.W, padx=(15, 0))
 
+        if self.nearest_station_mode:
+            # Nearest-station surfacing: show which buyer the calc picked,
+            # where they are, and how that station's rep changes the tax.
+            ttk.Label(calc_results, text="Best buy station:").pack(anchor=tk.W, pady=(5, 0))
+            self.nearest_station_label = ttk.Label(
+                calc_results, text="—", font=("Segoe UI", 9)
+            )
+            self.nearest_station_label.pack(anchor=tk.W, padx=(15, 0))
+
+            ttk.Label(calc_results, text="Distance:").pack(anchor=tk.W, pady=(3, 0))
+            self.nearest_distance_label = ttk.Label(
+                calc_results, text="—", font=("Segoe UI", 9)
+            )
+            self.nearest_distance_label.pack(anchor=tk.W, padx=(15, 0))
+
+            ttk.Label(calc_results, text="Standings @ sell station:").pack(anchor=tk.W, pady=(3, 0))
+            self.nearest_standings_label = ttk.Label(
+                calc_results, text="—", font=("Segoe UI", 9)
+            )
+            self.nearest_standings_label.pack(anchor=tk.W, padx=(15, 0))
+
+            ttk.Label(calc_results, text="Tax @ that rep:").pack(anchor=tk.W, pady=(3, 0))
+            self.nearest_tax_label = ttk.Label(
+                calc_results, text="—", font=("Segoe UI", 9)
+            )
+            self.nearest_tax_label.pack(anchor=tk.W, padx=(15, 0))
+
         ttk.Label(calc_results, text="Max Buy Price (1% profit):").pack(anchor=tk.W, pady=(3, 0))
         self.max_buy_label = ttk.Label(calc_results, text="--", font=("Segoe UI", 10, "bold"), foreground="green")
         self.max_buy_label.pack(anchor=tk.W, padx=(15, 0))
@@ -103,49 +149,17 @@ class MaxBuyCalcMixin:
         def fetch_thread():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            best_buy = None
+            payload = None
             error_msg = None
 
             try:
                 client = self.get_client() if self.get_client else None
-                if client:
-                    import aiohttp
-
-                    async def do_fetch():
-                        client.reset_for_new_loop()
-                        async with aiohttp.ClientSession(
-                            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-                        ) as session:
-                            client.session = session
-                            url = f"https://esi.evetech.net/latest/markets/{self.region_id}/orders/"
-                            all_buy_orders = []
-                            page = 1
-                            while True:
-                                async with session.get(url, params={
-                                    "type_id": type_id,
-                                    "order_type": "buy",
-                                    "page": page
-                                }) as resp:
-                                    if resp.status != 200:
-                                        break
-                                    data = await resp.json()
-                                    if not data:
-                                        break
-                                    all_buy_orders.extend(data)
-                                    total_pages = int(resp.headers.get("X-Pages", 1))
-                                    if page >= total_pages:
-                                        break
-                                    page += 1
-                            return all_buy_orders
-
-                    buy_orders = loop.run_until_complete(do_fetch())
-
-                    if buy_orders:
-                        best_buy = max(order["price"] for order in buy_orders)
-                    else:
-                        error_msg = "No buy orders found"
-                else:
+                if not client:
                     error_msg = "No client available"
+                else:
+                    payload, error_msg = loop.run_until_complete(
+                        self._async_resolve_best_buy(client, type_id)
+                    )
             except Exception as e:
                 error_msg = str(e)
                 print(f"Max buy calc error: {e}")
@@ -154,10 +168,102 @@ class MaxBuyCalcMixin:
 
             if error_msg:
                 submit(lambda: self._update_calc_error(error_msg))
+            elif self.nearest_station_mode:
+                submit(lambda: self._update_calc_display_nearest(payload))
             else:
-                submit(lambda: self._update_calc_display(best_buy))
+                submit(lambda: self._update_calc_display(payload["best_buy"]))
 
         threading.Thread(target=fetch_thread, daemon=True).start()
+
+    async def _async_resolve_best_buy(self, client, type_id: int):
+        """Fetch buy orders and (in nearest mode) resolve station + jumps.
+
+        Returns (payload, error_msg). Exactly one of payload/error_msg is
+        non-None.
+          - non-nearest: payload = {"best_buy": float}
+          - nearest:     payload = {"best_buy", "location_id", "system_id",
+                                    "jumps", "station_info"}
+        """
+        import aiohttp
+        from gui_jump_cache import JumpCache
+        from gui_station_lookup import StationLookup, PLAYER_STRUCTURE_ID_THRESHOLD
+
+        client.reset_for_new_loop()
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+        ) as session:
+            client.session = session
+
+            # Paginate buy orders for this type in the configured region.
+            url = f"https://esi.evetech.net/latest/markets/{self.region_id}/orders/"
+            all_orders = []
+            page = 1
+            while True:
+                async with session.get(url, params={
+                    "type_id": type_id,
+                    "order_type": "buy",
+                    "page": page,
+                }) as resp:
+                    if resp.status != 200:
+                        break
+                    data = await resp.json()
+                    if not data:
+                        break
+                    all_orders.extend(data)
+                    total_pages = int(resp.headers.get("X-Pages", 1))
+                    if page >= total_pages:
+                        break
+                    page += 1
+
+            if not all_orders:
+                return (None, "No buy orders found")
+
+            if not self.nearest_station_mode:
+                return ({"best_buy": max(o["price"] for o in all_orders)}, None)
+
+            # --- Nearest-station mode -------------------------------------
+            # NPC sales tax doesn't apply the same way at player structures
+            # (structure owner sets a market tax outside the rep system).
+            candidates = [
+                o for o in all_orders
+                if o.get("location_id", 0) < PLAYER_STRUCTURE_ID_THRESHOLD
+            ]
+            if not candidates:
+                return (None, "Only player-structure buy orders -- skipping")
+
+            origin = self.get_origin_system() if self.get_origin_system else None
+            if origin is None:
+                return (None, "Origin system not configured")
+
+            # Resolve jumps for each unique system once (cached across calls).
+            unique_systems = {o["system_id"] for o in candidates if o.get("system_id")}
+            jc = JumpCache.singleton()
+            jumps_map: dict[int, int] = {}
+            for sys_id in unique_systems:
+                j = await jc.fetch(session, origin, sys_id)
+                if j is not None:
+                    jumps_map[sys_id] = j
+
+            in_range = [
+                o for o in candidates
+                if jumps_map.get(o.get("system_id"), 999) <= self.max_jumps
+            ]
+            if not in_range:
+                return (None,
+                        f"No buy orders within {self.max_jumps} jumps of origin")
+
+            best = max(in_range, key=lambda o: o["price"])
+
+            sl = StationLookup.singleton()
+            station_info = await sl.fetch(session, best["location_id"])
+
+            return ({
+                "best_buy": best["price"],
+                "location_id": best["location_id"],
+                "system_id": best.get("system_id"),
+                "jumps": jumps_map.get(best.get("system_id")),
+                "station_info": station_info,
+            }, None)
 
     def _update_calc_error(self, msg: str):
         """Display calculation error."""
@@ -203,6 +309,83 @@ class MaxBuyCalcMixin:
             fee_info += " (default - no skills)"
         self.calc_status_label.configure(text=fee_info)
 
+        self.calc_btn.configure(state=tk.NORMAL)
+        self.use_price_btn.configure(state=tk.NORMAL)
+
+    def _update_calc_display_nearest(self, payload: dict):
+        """Display nearest-station calc results: surfaces station, distance,
+        the user's rep at that station, and the tax that rep produces -- so
+        the user can verify which buyer the 1%-profit max-buy is based on.
+        """
+        if not self._calc_ui_ready():
+            return
+
+        best_buy = payload["best_buy"]
+        station_info = payload.get("station_info") or {}
+        jumps = payload.get("jumps")
+        location_id = payload.get("location_id")
+
+        self.best_buy_price = best_buy
+        self.best_buy_label.configure(text=f"{best_buy:,.2f} ISK")
+
+        station_name = station_info.get("name") or f"Station {location_id}"
+        self.nearest_station_label.configure(text=station_name)
+        if jumps is not None:
+            self.nearest_distance_label.configure(text=f"{jumps} jump(s)")
+        else:
+            self.nearest_distance_label.configure(text="?")
+
+        # Look up user's standings against the station's corp + faction.
+        corp_standing = 0.0
+        faction_standing = 0.0
+        standings_source = "no standings"
+        standings_obj = self.get_esi_standings() if self.get_esi_standings else None
+        corp_id = station_info.get("corp_id")
+        faction_id = station_info.get("faction_id")
+        if standings_obj:
+            if corp_id:
+                corp_standing = standings_obj.get_corp_standing(corp_id, slot="seller")
+            if faction_id:
+                faction_standing = standings_obj.get_faction_standing(faction_id, slot="seller")
+            standings_source = "from ESI"
+
+        self.nearest_standings_label.configure(
+            text=f"Corp {corp_standing:.2f}  ·  Faction {faction_standing:.2f}  "
+                 f"({standings_source})"
+        )
+
+        # Build an adjusted skills object: keep broker_relations / accounting /
+        # advanced_broker_relations / manual overrides from the user's current
+        # skills, but substitute the buyer-station standings for fee math.
+        base = self.get_skills() if self.get_skills else DEFAULT_SKILLS
+        if base is None:
+            base = DEFAULT_SKILLS
+        adjusted = TradingSkills(
+            broker_relations=base.broker_relations,
+            accounting=base.accounting,
+            advanced_broker_relations=base.advanced_broker_relations,
+            station_standing=corp_standing,
+            faction_standing=faction_standing,
+            manual_broker_fee=base.manual_broker_fee,
+            manual_sales_tax=base.manual_sales_tax,
+        )
+        broker_rate = get_broker_fee_rate(adjusted) / 100.0
+        tax_rate = get_sales_tax_rate(adjusted) / 100.0
+        self.nearest_tax_label.configure(text=f"{tax_rate*100:.2f}%")
+
+        # Same instant-buy formula as the original calc, but with the
+        # station-specific tax_rate.
+        target_margin = 0.01
+        net_revenue = best_buy * (1.0 - broker_rate - tax_rate)
+        max_buy = net_revenue / (1.0 + target_margin)
+
+        self.calculated_max_buy = max_buy
+        self.max_buy_label.configure(text=f"{max_buy:,.2f} ISK")
+
+        self.calc_status_label.configure(
+            text=f"Broker: {broker_rate*100:.2f}%  ·  "
+                 f"Tax: {tax_rate*100:.2f}% @ this station's rep"
+        )
         self.calc_btn.configure(state=tk.NORMAL)
         self.use_price_btn.configure(state=tk.NORMAL)
 
