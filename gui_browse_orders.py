@@ -62,8 +62,8 @@ class BrowseStructureOrdersDialog(BrowseOrdersFilterMixin, tk.Toplevel):
         header.pack(fill=tk.X)
 
         # Structure picker — Combobox lets the user hop between any registered
-        # player structure without closing the dialog. Falls back to a plain
-        # label when there's only one structure (avoids dropdown noise).
+        # player structure without closing the dialog. Always rendered (even
+        # with a single structure) so the affordance is visible from day one.
         from config import TRADE_HUBS
         self._structures = [
             (k, cfg) for k, cfg in TRADE_HUBS.items()
@@ -72,22 +72,16 @@ class BrowseStructureOrdersDialog(BrowseOrdersFilterMixin, tk.Toplevel):
         names = [cfg.get("name", str(cfg["station_id"]))
                  for _, cfg in self._structures]
 
-        if len(self._structures) > 1:
-            self._structure_var = tk.StringVar(value=self.structure_name)
-            self._structure_combo = ttk.Combobox(
-                header, textvariable=self._structure_var,
-                values=names, state="readonly", width=40,
-                font=("Segoe UI", 10, "bold"),
-            )
-            self._structure_combo.pack(side=tk.LEFT)
-            self._structure_combo.bind(
-                "<<ComboboxSelected>>", self._on_structure_changed
-            )
-        else:
-            self._structure_var = None
-            self._structure_combo = None
-            ttk.Label(header, text=self.structure_name,
-                      font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
+        self._structure_var = tk.StringVar(value=self.structure_name)
+        self._structure_combo = ttk.Combobox(
+            header, textvariable=self._structure_var,
+            values=names, state="readonly", width=40,
+            font=("Segoe UI", 10, "bold"),
+        )
+        self._structure_combo.pack(side=tk.LEFT)
+        self._structure_combo.bind(
+            "<<ComboboxSelected>>", self._on_structure_changed
+        )
 
         self._structure_id_var = tk.StringVar(
             value=f"  (id {self.structure_id}, slot: {self.slot})"
@@ -292,8 +286,6 @@ class BrowseStructureOrdersDialog(BrowseOrdersFilterMixin, tk.Toplevel):
         gray "(id …, slot …)" sub-label, clears both trees, then kicks a fresh
         fetch. Filter chips persist — same player browsing, same intent.
         """
-        if not self._structure_var:
-            return
         chosen = self._structure_var.get()
         match = next(
             (cfg for _, cfg in self._structures
