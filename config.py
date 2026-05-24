@@ -7,7 +7,7 @@ The values below are kept for reference/documentation only.
 # =============================================================================
 # APP VERSION - Update this single line to change version everywhere
 # =============================================================================
-APP_VERSION = "2.9 live"
+APP_VERSION = "3.0 live"
 
 # Region IDs
 JITA_REGION_ID = 10000002  # The Forge
@@ -131,6 +131,19 @@ MIN_SECURITY_STATUS = 0.45  # High-sec only (0.5+ rounds to high, 0.45 is safe t
 ESI_BASE_URL = "https://esi.evetech.net/latest"
 MAX_CONCURRENT_REQUESTS = 20
 REQUEST_TIMEOUT = 30
+
+# User-Agent sent on every ESI request. CCP's best-practices doc says apps
+# SHOULD identify themselves; anonymous traffic is what gets banned first
+# when CCP investigates abuse. Format: "app-name/version (contact)".
+# Update the contact if you want CCP to reach a different inbox/handle.
+ESI_USER_AGENT = f"EVE-Market-Scout/{APP_VERSION} (spirit1flyer@yahoo.com; Discord: spirit1flyer)"
+
+# When the X-ESI-Error-Limit-Remain header drops to or below this number,
+# we pre-emptively pause outgoing requests until the window resets. Hitting
+# the limit (a true 420) gets you tossed for the rest of the window AND
+# flagged for ban consideration on repeat offenses; staying ~10 away is cheap
+# insurance against a misbehaving endpoint draining the budget on us.
+ERROR_LIMIT_PAUSE_THRESHOLD = 10
 
 # Auto-refresh settings
 AUTO_REFRESH_ENABLED = True

@@ -60,9 +60,39 @@ class BrowseStructureOrdersDialog(BrowseOrdersFilterMixin, tk.Toplevel):
     def _build(self):
         header = ttk.Frame(self, padding=10)
         header.pack(fill=tk.X)
-        ttk.Label(header, text=self.structure_name,
-                  font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
-        ttk.Label(header, text=f"  (id {self.structure_id}, slot: {self.slot})",
+
+        # Structure picker — Combobox lets the user hop between any registered
+        # player structure without closing the dialog. Falls back to a plain
+        # label when there's only one structure (avoids dropdown noise).
+        from config import TRADE_HUBS
+        self._structures = [
+            (k, cfg) for k, cfg in TRADE_HUBS.items()
+            if cfg.get("type") == "structure"
+        ]
+        names = [cfg.get("name", str(cfg["station_id"]))
+                 for _, cfg in self._structures]
+
+        if len(self._structures) > 1:
+            self._structure_var = tk.StringVar(value=self.structure_name)
+            self._structure_combo = ttk.Combobox(
+                header, textvariable=self._structure_var,
+                values=names, state="readonly", width=40,
+                font=("Segoe UI", 10, "bold"),
+            )
+            self._structure_combo.pack(side=tk.LEFT)
+            self._structure_combo.bind(
+                "<<ComboboxSelected>>", self._on_structure_changed
+            )
+        else:
+            self._structure_var = None
+            self._structure_combo = None
+            ttk.Label(header, text=self.structure_name,
+                      font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
+
+        self._structure_id_var = tk.StringVar(
+            value=f"  (id {self.structure_id}, slot: {self.slot})"
+        )
+        ttk.Label(header, textvariable=self._structure_id_var,
                   foreground="gray").pack(side=tk.LEFT)
         ttk.Button(header, text="Refresh", command=self._kick_fetch).pack(side=tk.RIGHT)
 
@@ -254,6 +284,42 @@ class BrowseStructureOrdersDialog(BrowseOrdersFilterMixin, tk.Toplevel):
         # reflects the snapshot just recorded by the Refresh button.
         if self._notebook.index(self._notebook.select()) == 1:
             self._refresh_history_view()
+
+    def _on_structure_changed(self, _event):
+        """User picked a different structure from the header dropdown.
+
+        Swaps the active structure_id/name, updates the window title and the
+        gray "(id …, slot …)" sub-label, clears both trees, then kicks a fresh
+        fetch. Filter chips persist — same player browsing, same intent.
+        """
+        if not self._structure_var:
+            return
+        chosen = self._structure_var.get()
+        match = next(
+            (cfg for _, cfg in self._structures
+             if cfg.get("name", str(cfg["station_id"])) == chosen),
+            None,
+        )
+        if not match or match["station_id"] == self.structure_id:
+            return
+
+        self.structure_id = match["station_id"]
+        self.structure_name = match.get("name", str(self.structure_id))
+        self.title(f"Browse Orders — {self.structure_name}")
+        self._structure_id_var.set(
+            f"  (id {self.structure_id}, slot: {self.slot})"
+        )
+
+        # Drop cached per-structure state so we don't leak data from the
+        # previous structure into the new view. Filter chips intentionally
+        # survive — selections like "Ammunition & Charges" are still
+        # meaningful at the new structure.
+        self._type_names = {}
+        self.set_current_orders([])
+        self.set_history_items([])
+        self._apply_filters_and_render()
+
+        self._kick_fetch()
 
     def _refresh_history_view(self):
         try:

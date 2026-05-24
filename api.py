@@ -10,6 +10,7 @@ from config import (
     ESI_BASE_URL, MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT,
     JITA_SYSTEM_ID, MIN_SECURITY_STATUS,
     JITA_REGION_ID,
+    ESI_USER_AGENT, ERROR_LIMIT_PAUSE_THRESHOLD,
 )
 from esi_supplement import ESISupplementCache
 from market_history import MarketHistoryDB
@@ -56,6 +57,14 @@ class ESIClient(TypeNameMixin):
 
         # Shared per-region order cache (scanner <-> stock market)
         self.order_cache = OrderCacheStore()
+
+        # Error-budget pause. Set when X-ESI-Error-Limit-Remain dips below
+        # ERROR_LIMIT_PAUSE_THRESHOLD; we sleep until the window resets so
+        # we don't trigger a 420 (which would block ALL our requests for the
+        # remainder of the window and put us on CCP's radar for bans).
+        # Plain attribute — write contention across loops is harmless here,
+        # extending the pause is always safe.
+        self._error_limit_pause_until: Optional[datetime] = None
 
         # Backfill legacy Jita fields from disk-loaded cache so has_jita_cache()
         # returns True on startup without forcing a fresh ESI fetch.
@@ -121,7 +130,8 @@ class ESIClient(TypeNameMixin):
         if state["session"] is None or state["session"].closed:
             state["session"] = aiohttp.ClientSession(
                 connector=make_connector(),
-                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+                headers={"User-Agent": ESI_USER_AGENT},
             )
         return state["session"]
 
@@ -232,7 +242,8 @@ class ESIClient(TypeNameMixin):
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(
             connector=make_connector(),
-            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+            headers={"User-Agent": ESI_USER_AGENT},
         )
         return self
 
@@ -240,13 +251,116 @@ class ESIClient(TypeNameMixin):
         if self.session:
             await self.session.close()
 
+    # ------------------------------------------------------------ rate limits
+
+    def _record_response_headers(self, response: aiohttp.ClientResponse,
+                                 endpoint: str = ""):
+        """Inspect ESI's error-budget headers and arm a pause if we're close.
+
+        `X-ESI-Error-Limit-Remain` counts non-2xx/3xx responses left in the
+        current 60s window (limit is 100). When it dips low we set
+        `_error_limit_pause_until` to the window's reset time so subsequent
+        requests park themselves instead of triggering a 420.
+
+        Logs (every line carries a logger timestamp from main.py's
+        basicConfig, so the times line up with the rest of eve_scout.log):
+          [ESI-RL] error budget X remaining on <endpoint>           (warn zone)
+          [ESI-RL] pausing N s until window resets at <UTC ISO>     (gate arm)
+        """
+        remain_raw = response.headers.get("X-Esi-Error-Limit-Remain")
+        reset_raw = response.headers.get("X-Esi-Error-Limit-Reset")
+        if not remain_raw or not reset_raw:
+            return
+        try:
+            remain = int(remain_raw)
+            reset = int(reset_raw)
+        except (ValueError, TypeError):
+            return
+
+        # Warning zone — budget is dipping but we're not throttling yet. Lets
+        # the user see WHICH endpoint started eating the budget before the
+        # pause-armed line ever fires.
+        if (
+            remain <= ERROR_LIMIT_PAUSE_THRESHOLD * 3
+            and remain > ERROR_LIMIT_PAUSE_THRESHOLD
+            and response.status >= 400
+        ):
+            print(
+                f"[ESI-RL] error budget low: {remain}/100 remaining after "
+                f"HTTP {response.status} on {endpoint or '?'} (resets in {reset}s)"
+            )
+
+        if remain > ERROR_LIMIT_PAUSE_THRESHOLD:
+            return
+
+        pause_until = datetime.now(timezone.utc) + timedelta(seconds=reset + 1)
+        prior = self._error_limit_pause_until
+        if prior is None or pause_until > prior:
+            self._error_limit_pause_until = pause_until
+            print(
+                f"[ESI-RL] THROTTLE ARMED: budget {remain}/100 after HTTP "
+                f"{response.status} on {endpoint or '?'} — pausing all ESI "
+                f"requests for {reset + 1}s, resumes at "
+                f"{pause_until.isoformat(timespec='seconds')}"
+            )
+
+    async def _await_rate_limit_pause(self):
+        """If a pause is armed, sleep until it expires before proceeding.
+
+        First waiter to wake clears the pause and logs THROTTLE RELEASED so
+        the log shows a clean start/end pair per throttle event. Concurrent
+        waiters that lose the race just see pause_until cleared and proceed
+        silently.
+        """
+        pause_until = self._error_limit_pause_until
+        if pause_until is None:
+            return
+        delay = (pause_until - datetime.now(timezone.utc)).total_seconds()
+        if delay <= 0:
+            return
+        await asyncio.sleep(delay)
+        # GIL-atomic check-and-clear — only the first waker logs the release.
+        if self._error_limit_pause_until == pause_until:
+            self._error_limit_pause_until = None
+            print(
+                f"[ESI-RL] THROTTLE RELEASED at "
+                f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} "
+                f"— resuming ESI requests"
+            )
+
     async def _get(self, endpoint: str, params: dict = None) -> dict | list:
-        """Make a rate-limited GET request."""
+        """Rate-limited GET. Honors X-ESI-Error-Limit-* and 429 Retry-After.
+
+        429s get one automatic retry after sleeping for `Retry-After` seconds;
+        any other 4xx/5xx falls through to `raise_for_status()` as before so
+        existing callers (e.g. `_get_page_safe` swallowing 404) keep working.
+        """
+        url = f"{ESI_BASE_URL}{endpoint}"
+        await self._await_rate_limit_pause()
         async with self.semaphore:
-            url = f"{ESI_BASE_URL}{endpoint}"
-            async with self.session.get(url, params=params) as response:
-                response.raise_for_status()
-                return await response.json()
+            for attempt in range(2):
+                async with self.session.get(url, params=params) as response:
+                    self._record_response_headers(response, endpoint)
+                    if response.status == 429 and attempt == 0:
+                        retry_after = max(
+                            1, int(response.headers.get("Retry-After", "1") or "1")
+                        )
+                        print(
+                            f"[ESI-RL] HTTP 429 on {endpoint} — Retry-After "
+                            f"{retry_after}s, sleeping then retrying once"
+                        )
+                        await asyncio.sleep(retry_after)
+                        continue
+                    if response.status == 429:
+                        print(
+                            f"[ESI-RL] HTTP 429 on {endpoint} AGAIN after "
+                            f"retry — giving up, raising"
+                        )
+                    response.raise_for_status()
+                    return await response.json()
+        # Unreachable — the loop always returns or raises — but kept for type
+        # checkers that can't prove that.
+        raise RuntimeError("ESI _get fell through retry loop unexpectedly")
 
     async def get_system_info(self, system_id: int) -> dict:
         """Get system info including security status and stargates."""
@@ -409,13 +523,35 @@ class ESIClient(TypeNameMixin):
             all_orders = []
 
             url = f"{ESI_BASE_URL}/markets/{region_id}/orders/"
+            orders_endpoint = f"/markets/{region_id}/orders/"
+            await self._await_rate_limit_pause()
             async with self.semaphore:
-                async with self.session.get(url, params={"page": 1}) as response:
-                    response.raise_for_status()
-                    total_pages = int(response.headers.get("X-Pages", 1))
-                    expires = self._parse_expires_header(response)
-                    self._apply_earliest_expires(expires)
-                    all_orders.extend(await response.json())
+                # Mirror _get's 429 retry but keep the response object live so
+                # we can read X-Pages / Cache-Control before the body parse.
+                for attempt in range(2):
+                    async with self.session.get(url, params={"page": 1}) as response:
+                        self._record_response_headers(response, orders_endpoint)
+                        if response.status == 429 and attempt == 0:
+                            retry_after = max(
+                                1, int(response.headers.get("Retry-After", "1") or "1")
+                            )
+                            print(
+                                f"[ESI-RL] HTTP 429 on {orders_endpoint} — "
+                                f"Retry-After {retry_after}s, sleeping then retrying once"
+                            )
+                            await asyncio.sleep(retry_after)
+                            continue
+                        if response.status == 429:
+                            print(
+                                f"[ESI-RL] HTTP 429 on {orders_endpoint} AGAIN "
+                                f"after retry — giving up, raising"
+                            )
+                        response.raise_for_status()
+                        total_pages = int(response.headers.get("X-Pages", 1))
+                        expires = self._parse_expires_header(response)
+                        self._apply_earliest_expires(expires)
+                        all_orders.extend(await response.json())
+                        break
 
             if total_pages > 1:
                 tasks = [
