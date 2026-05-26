@@ -6,9 +6,10 @@ can be plugged into the sales-tax formula.
 
 Resolution order:
   1. Built-in TRADE_HUBS (no ESI call needed; corp_id + faction_id known).
-  2. ESI `/universe/stations/{station_id}/` -> owner (corp_id), system_id.
-     Then ESI `/corporations/{corp_id}/` -> faction_id (may be None for
-     player corps; tolerated downstream).
+  2. ESI `/universe/stations/{station_id}/` -> owner (corp_id), system_id,
+     race_id. race_id is mapped to faction_id via RACE_TO_FACTION (ESI's
+     `/corporations/{id}/` no longer returns faction_id for NPC corps, so
+     using the station's race_id is the only reliable path).
   3. Player structures (station_id >= 1e12): returned as None -- NPC sales
      tax doesn't apply the same way; caller should fall back to default.
 
@@ -27,6 +28,16 @@ if TYPE_CHECKING:
 
 
 PLAYER_STRUCTURE_ID_THRESHOLD = 1_000_000_000_000
+
+# Station race_id -> empire faction_id. Covers the four major NPC empires
+# that own trade hubs. Other race_ids (e.g. Jove) map to None; calc falls
+# back to corp-standing-only behavior, which is fine for niche cases.
+RACE_TO_FACTION = {
+    1: 500001,  # Caldari State
+    2: 500002,  # Minmatar Republic
+    4: 500003,  # Amarr Empire
+    8: 500004,  # Gallente Federation
+}
 
 
 def _cache_path() -> str:
@@ -47,8 +58,6 @@ class StationLookup:
     def __init__(self):
         # station_id -> {"corp_id", "faction_id", "system_id", "name"}
         self._data: dict[int, dict] = {}
-        # corp_id -> faction_id (or None)
-        self._corp_faction: dict[int, Optional[int]] = {}
         self._loaded = False
 
     def _load(self):
@@ -61,8 +70,6 @@ class StationLookup:
                     raw = json.load(f)
                 for sid_str, info in raw.get("stations", {}).items():
                     self._data[int(sid_str)] = info
-                for cid_str, fid in raw.get("corp_faction", {}).items():
-                    self._corp_faction[int(cid_str)] = fid
             except Exception as e:
                 print(f"[StationLookup] load error: {e}")
         self._loaded = True
@@ -72,7 +79,6 @@ class StationLookup:
         try:
             payload = {
                 "stations": {str(sid): info for sid, info in self._data.items()},
-                "corp_faction": {str(cid): fid for cid, fid in self._corp_faction.items()},
             }
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
@@ -100,14 +106,36 @@ class StationLookup:
                     station_id: int) -> Optional[dict]:
         """Resolve via cache or ESI. Returns None for player structures or on
         error. Idempotent: subsequent calls return the cached entry.
+
+        Self-heals cached entries that were written by the old corp->faction
+        lookup path (now always-null because ESI dropped that field for NPC
+        corps) by re-fetching the station and deriving faction from race_id.
         """
         cached = self.lookup(station_id)
         if cached is not None:
+            if (cached.get("faction_id") is None
+                    and station_id < PLAYER_STRUCTURE_ID_THRESHOLD):
+                fresh = await self._fetch_station_info(session, station_id)
+                if fresh and fresh.get("faction_id") is not None:
+                    cached["faction_id"] = fresh["faction_id"]
+                    self._data[station_id] = cached
+                    self._save()
             return cached
         if station_id >= PLAYER_STRUCTURE_ID_THRESHOLD:
             return None
 
-        # /universe/stations/{station_id}/ -> owner (corp_id), system_id, name
+        info = await self._fetch_station_info(session, station_id)
+        if info is None:
+            return None
+        self._data[station_id] = info
+        self._save()
+        return info
+
+    async def _fetch_station_info(self, session: "aiohttp.ClientSession",
+                                  station_id: int) -> Optional[dict]:
+        """ESI /universe/stations/{id}/ -> info dict. Derives faction_id from
+        race_id since /corporations/{id}/ no longer returns it for NPC corps.
+        """
         url = f"https://esi.evetech.net/latest/universe/stations/{station_id}/"
         try:
             async with session.get(url) as resp:
@@ -118,37 +146,9 @@ class StationLookup:
             print(f"[StationLookup] station fetch error {station_id}: {e}")
             return None
 
-        corp_id = sta.get("owner")
-        system_id = sta.get("system_id")
-        name = sta.get("name")
-        faction_id = await self._fetch_corp_faction(session, corp_id) if corp_id else None
-
-        info = {
-            "corp_id": corp_id,
-            "faction_id": faction_id,
-            "system_id": system_id,
-            "name": name,
+        return {
+            "corp_id": sta.get("owner"),
+            "faction_id": RACE_TO_FACTION.get(sta.get("race_id")),
+            "system_id": sta.get("system_id"),
+            "name": sta.get("name"),
         }
-        self._data[station_id] = info
-        self._save()
-        return info
-
-    async def _fetch_corp_faction(self, session: "aiohttp.ClientSession",
-                                   corp_id: int) -> Optional[int]:
-        if corp_id in self._corp_faction:
-            return self._corp_faction[corp_id]
-        url = f"https://esi.evetech.net/latest/corporations/{corp_id}/"
-        try:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    self._corp_faction[corp_id] = None
-                    return None
-                corp = await resp.json()
-        except Exception as e:
-            print(f"[StationLookup] corp fetch error {corp_id}: {e}")
-            self._corp_faction[corp_id] = None
-            return None
-        faction_id = corp.get("faction_id")  # may be absent for player corps
-        self._corp_faction[corp_id] = faction_id
-        # Saved by the caller after the station_info upsert.
-        return faction_id
