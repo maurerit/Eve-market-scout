@@ -38,6 +38,9 @@ class MaxBuyCalcMixin:
         """Initialize calc state. Call from host __init__."""
         self.best_buy_price = None
         self.calculated_max_buy = None
+        # Per-block max-buy values for the nearest-mode dual-pick UI.
+        self.closest_max_buy = None
+        self.max_rep_max_buy = None
         # Nearest-station mode (NPC Orders flow). Host overrides AFTER
         # _init_calc_state and BEFORE _build_max_buy_calc_section. Defaults
         # keep the original watchlist behavior unchanged.
@@ -52,10 +55,10 @@ class MaxBuyCalcMixin:
         self.best_buy_label = None
         self.max_buy_label = None
         self.use_price_btn = None
-        self.nearest_station_label = None
-        self.nearest_distance_label = None
-        self.nearest_standings_label = None
-        self.nearest_tax_label = None
+        # Dual-pick blocks for nearest mode (closest + max-rep). Each is a
+        # dict of widget refs returned by _build_pick_block().
+        self.closest_block = None
+        self.max_rep_block = None
 
     def _calc_ui_ready(self) -> bool:
         """True only when the calc UI has actually been built."""
@@ -92,41 +95,65 @@ class MaxBuyCalcMixin:
         self.best_buy_label.pack(anchor=tk.W, padx=(15, 0))
 
         if self.nearest_station_mode:
-            # Nearest-station surfacing: show which buyer the calc picked,
-            # where they are, and how that station's rep changes the tax.
-            ttk.Label(calc_results, text="Best buy station:").pack(anchor=tk.W, pady=(5, 0))
-            self.nearest_station_label = ttk.Label(
-                calc_results, text="—", font=("Segoe UI", 9)
+            # Two pick blocks: closest (jump-tiebreak) and max-rep (lowest-tax
+            # tiebreak). Both rank among buyers tied at the top regional price.
+            # Max-rep block is hidden until results show distinct stations.
+            self.closest_block = self._build_pick_block(calc_results, self._use_closest_price)
+            self.max_rep_block = self._build_pick_block(calc_results, self._use_max_rep_price)
+            self.max_rep_block["frame"].pack_forget()
+        else:
+            ttk.Label(calc_results, text="Max Buy Price (1% profit):").pack(anchor=tk.W, pady=(3, 0))
+            self.max_buy_label = ttk.Label(calc_results, text="--", font=("Segoe UI", 10, "bold"), foreground="green")
+            self.max_buy_label.pack(anchor=tk.W, padx=(15, 0))
+
+            self.use_price_btn = ttk.Button(
+                calc_frame, text="Use as Alert Price",
+                command=self._use_calculated_price, state=tk.DISABLED
             )
-            self.nearest_station_label.pack(anchor=tk.W, padx=(15, 0))
+            self.use_price_btn.pack(anchor=tk.W, pady=(5, 0))
 
-            ttk.Label(calc_results, text="Distance:").pack(anchor=tk.W, pady=(3, 0))
-            self.nearest_distance_label = ttk.Label(
-                calc_results, text="—", font=("Segoe UI", 9)
-            )
-            self.nearest_distance_label.pack(anchor=tk.W, padx=(15, 0))
+    def _build_pick_block(self, parent, use_callback):
+        """Build one nearest-mode result block: station / distance / standings /
+        tax / max-buy / Use button. Returns a dict of widget refs."""
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X, pady=(8, 0))
 
-            ttk.Label(calc_results, text="Standings @ sell station:").pack(anchor=tk.W, pady=(3, 0))
-            self.nearest_standings_label = ttk.Label(
-                calc_results, text="—", font=("Segoe UI", 9)
-            )
-            self.nearest_standings_label.pack(anchor=tk.W, padx=(15, 0))
+        header = ttk.Label(frame, text="", font=("Segoe UI", 9, "bold"))
+        header.pack(anchor=tk.W)
 
-            ttk.Label(calc_results, text="Tax @ that rep:").pack(anchor=tk.W, pady=(3, 0))
-            self.nearest_tax_label = ttk.Label(
-                calc_results, text="—", font=("Segoe UI", 9)
-            )
-            self.nearest_tax_label.pack(anchor=tk.W, padx=(15, 0))
+        ttk.Label(frame, text="Best buy station:").pack(anchor=tk.W, pady=(3, 0))
+        station = ttk.Label(frame, text="—", font=("Segoe UI", 9))
+        station.pack(anchor=tk.W, padx=(15, 0))
 
-        ttk.Label(calc_results, text="Max Buy Price (1% profit):").pack(anchor=tk.W, pady=(3, 0))
-        self.max_buy_label = ttk.Label(calc_results, text="--", font=("Segoe UI", 10, "bold"), foreground="green")
-        self.max_buy_label.pack(anchor=tk.W, padx=(15, 0))
+        ttk.Label(frame, text="Distance:").pack(anchor=tk.W, pady=(3, 0))
+        distance = ttk.Label(frame, text="—", font=("Segoe UI", 9))
+        distance.pack(anchor=tk.W, padx=(15, 0))
 
-        self.use_price_btn = ttk.Button(
-            calc_frame, text="Use as Alert Price",
-            command=self._use_calculated_price, state=tk.DISABLED
-        )
-        self.use_price_btn.pack(anchor=tk.W, pady=(5, 0))
+        ttk.Label(frame, text="Standings @ sell station:").pack(anchor=tk.W, pady=(3, 0))
+        standings = ttk.Label(frame, text="—", font=("Segoe UI", 9))
+        standings.pack(anchor=tk.W, padx=(15, 0))
+
+        ttk.Label(frame, text="Tax @ that rep:").pack(anchor=tk.W, pady=(3, 0))
+        tax = ttk.Label(frame, text="—", font=("Segoe UI", 9))
+        tax.pack(anchor=tk.W, padx=(15, 0))
+
+        ttk.Label(frame, text="Max Buy Price (1% profit):").pack(anchor=tk.W, pady=(3, 0))
+        max_buy = ttk.Label(frame, text="--", font=("Segoe UI", 10, "bold"), foreground="green")
+        max_buy.pack(anchor=tk.W, padx=(15, 0))
+
+        use_btn = ttk.Button(frame, text="Use as Alert Price", command=use_callback, state=tk.DISABLED)
+        use_btn.pack(anchor=tk.W, pady=(5, 0))
+
+        return {
+            "frame": frame,
+            "header": header,
+            "station": station,
+            "distance": distance,
+            "standings": standings,
+            "tax": tax,
+            "max_buy": max_buy,
+            "use_btn": use_btn,
+        }
 
     def _calculate_max_buy(self):
         """Fetch regional buy orders and calculate max profitable buy price."""
@@ -143,8 +170,15 @@ class MaxBuyCalcMixin:
         self.calc_status_label.configure(text="Fetching buy orders...")
         self.calc_btn.configure(state=tk.DISABLED)
         self.best_buy_label.configure(text="...")
-        self.max_buy_label.configure(text="...")
-        self.use_price_btn.configure(state=tk.DISABLED)
+        if self.nearest_station_mode and self.closest_block is not None:
+            self.closest_block["max_buy"].configure(text="...")
+            self.closest_block["use_btn"].configure(state=tk.DISABLED)
+            if self.max_rep_block is not None:
+                self.max_rep_block["frame"].pack_forget()
+                self.max_rep_block["use_btn"].configure(state=tk.DISABLED)
+        else:
+            self.max_buy_label.configure(text="...")
+            self.use_price_btn.configure(state=tk.DISABLED)
 
         def fetch_thread():
             loop = asyncio.new_event_loop()
@@ -181,8 +215,9 @@ class MaxBuyCalcMixin:
         Returns (payload, error_msg). Exactly one of payload/error_msg is
         non-None.
           - non-nearest: payload = {"best_buy": float}
-          - nearest:     payload = {"best_buy", "location_id", "system_id",
-                                    "jumps", "station_info"}
+          - nearest:     payload = {"candidates": [list of resolved top-price
+                                    buyers, each {price, location_id, system_id,
+                                    jumps, station_info}]}
         """
         import aiohttp
         from gui_jump_cache import JumpCache
@@ -252,18 +287,25 @@ class MaxBuyCalcMixin:
                 return (None,
                         f"No buy orders within {self.max_jumps} jumps of origin")
 
-            best = max(in_range, key=lambda o: o["price"])
+            # Surface every buyer at the top regional price so the display can
+            # show "closest" vs "max-rep" picks side-by-side. Tax math is done
+            # main-thread-side after station_info is resolved here.
+            top_price = max(o["price"] for o in in_range)
+            tied = [o for o in in_range if o["price"] == top_price]
 
             sl = StationLookup.singleton()
-            station_info = await sl.fetch(session, best["location_id"])
+            resolved = []
+            for o in tied:
+                info = await sl.fetch(session, o["location_id"])
+                resolved.append({
+                    "price": o["price"],
+                    "location_id": o["location_id"],
+                    "system_id": o.get("system_id"),
+                    "jumps": jumps_map.get(o.get("system_id")),
+                    "station_info": info,
+                })
 
-            return ({
-                "best_buy": best["price"],
-                "location_id": best["location_id"],
-                "system_id": best.get("system_id"),
-                "jumps": jumps_map.get(best.get("system_id")),
-                "station_info": station_info,
-            }, None)
+            return ({"candidates": resolved}, None)
 
     def _update_calc_error(self, msg: str):
         """Display calculation error."""
@@ -272,7 +314,14 @@ class MaxBuyCalcMixin:
         self.calc_status_label.configure(text=f"Error: {msg[:40]}")
         self.calc_btn.configure(state=tk.NORMAL)
         self.best_buy_label.configure(text="--")
-        self.max_buy_label.configure(text="--")
+        if self.nearest_station_mode and self.closest_block is not None:
+            self.closest_block["max_buy"].configure(text="--")
+            self.closest_block["use_btn"].configure(state=tk.DISABLED)
+            if self.max_rep_block is not None:
+                self.max_rep_block["frame"].pack_forget()
+                self.max_rep_block["use_btn"].configure(state=tk.DISABLED)
+        elif self.max_buy_label is not None:
+            self.max_buy_label.configure(text="--")
 
     def _update_calc_display(self, best_buy: float):
         """Calculate and display max buy price from best regional buy order."""
@@ -313,83 +362,124 @@ class MaxBuyCalcMixin:
         self.use_price_btn.configure(state=tk.NORMAL)
 
     def _update_calc_display_nearest(self, payload: dict):
-        """Display nearest-station calc results: surfaces station, distance,
-        the user's rep at that station, and the tax that rep produces -- so
-        the user can verify which buyer the 1%-profit max-buy is based on.
+        """Render the dual-pick nearest-mode result: 'Closest' and 'Max-rep'
+        picks from the buyers tied at the top regional price. Collapses to a
+        single block when both picks land on the same station.
         """
         if not self._calc_ui_ready():
             return
 
-        best_buy = payload["best_buy"]
-        station_info = payload.get("station_info") or {}
-        jumps = payload.get("jumps")
-        location_id = payload.get("location_id")
+        candidates = payload.get("candidates") or []
+        if not candidates:
+            self._update_calc_error("No candidates returned")
+            return
 
-        self.best_buy_price = best_buy
-        self.best_buy_label.configure(text=f"{best_buy:,.2f} ISK")
+        top_price = candidates[0]["price"]
+        self.best_buy_price = top_price
+        self.best_buy_label.configure(text=f"{top_price:,.2f} ISK")
 
-        station_name = station_info.get("name") or f"Station {location_id}"
-        self.nearest_station_label.configure(text=station_name)
-        if jumps is not None:
-            self.nearest_distance_label.configure(text=f"{jumps} jump(s)")
-        else:
-            self.nearest_distance_label.configure(text="?")
-
-        # Look up user's standings against the station's corp + faction.
-        corp_standing = 0.0
-        faction_standing = 0.0
-        standings_source = "no standings"
         standings_obj = self.get_esi_standings() if self.get_esi_standings else None
-        corp_id = station_info.get("corp_id")
-        faction_id = station_info.get("faction_id")
-        if standings_obj:
-            if corp_id:
-                corp_standing = standings_obj.get_corp_standing(corp_id, slot="seller")
-            if faction_id:
-                faction_standing = standings_obj.get_faction_standing(faction_id, slot="seller")
-            standings_source = "from ESI"
-
-        self.nearest_standings_label.configure(
-            text=f"Corp {corp_standing:.2f}  ·  Faction {faction_standing:.2f}  "
-                 f"({standings_source})"
-        )
-
-        # Build an adjusted skills object: keep broker_relations / accounting /
-        # advanced_broker_relations / manual overrides from the user's current
-        # skills, but substitute the buyer-station standings for fee math.
         base = self.get_skills() if self.get_skills else DEFAULT_SKILLS
         if base is None:
             base = DEFAULT_SKILLS
-        adjusted = TradingSkills(
-            broker_relations=base.broker_relations,
-            accounting=base.accounting,
-            advanced_broker_relations=base.advanced_broker_relations,
-            station_standing=corp_standing,
-            faction_standing=faction_standing,
-            manual_broker_fee=base.manual_broker_fee,
-            manual_sales_tax=base.manual_sales_tax,
-        )
-        broker_rate = get_broker_fee_rate(adjusted) / 100.0
-        tax_rate = get_sales_tax_rate(adjusted) / 100.0
-        self.nearest_tax_label.configure(text=f"{tax_rate*100:.2f}%")
 
-        # Same instant-buy formula as the original calc, but with the
-        # station-specific tax_rate.
         target_margin = 0.01
-        net_revenue = best_buy * (1.0 - broker_rate - tax_rate)
-        max_buy = net_revenue / (1.0 + target_margin)
+        for c in candidates:
+            info = c.get("station_info") or {}
+            corp_id = info.get("corp_id")
+            faction_id = info.get("faction_id")
+            corp_std = 0.0
+            faction_std = 0.0
+            if standings_obj:
+                if corp_id:
+                    corp_std = standings_obj.get_corp_standing(corp_id, slot="seller")
+                if faction_id:
+                    faction_std = standings_obj.get_faction_standing(faction_id, slot="seller")
+            adjusted = TradingSkills(
+                broker_relations=base.broker_relations,
+                accounting=base.accounting,
+                advanced_broker_relations=base.advanced_broker_relations,
+                station_standing=corp_std,
+                faction_standing=faction_std,
+                manual_broker_fee=base.manual_broker_fee,
+                manual_sales_tax=base.manual_sales_tax,
+            )
+            broker_rate = get_broker_fee_rate(adjusted) / 100.0
+            tax_rate = get_sales_tax_rate(adjusted) / 100.0
+            net_revenue = c["price"] * (1.0 - broker_rate - tax_rate)
+            c["corp_std"] = corp_std
+            c["faction_std"] = faction_std
+            c["broker_rate"] = broker_rate
+            c["tax_rate"] = tax_rate
+            c["max_buy"] = net_revenue / (1.0 + target_margin)
 
-        self.calculated_max_buy = max_buy
-        self.max_buy_label.configure(text=f"{max_buy:,.2f} ISK")
+        # Closest: fewest jumps. Max-rep: lowest tax (monotonic in rep benefit).
+        # Each tiebreaks against the other so the picks differ only when they
+        # truly diverge.
+        closest = min(
+            candidates,
+            key=lambda c: (c["jumps"] if c["jumps"] is not None else 999, c["tax_rate"]),
+        )
+        max_rep = min(
+            candidates,
+            key=lambda c: (c["tax_rate"], c["jumps"] if c["jumps"] is not None else 999),
+        )
+
+        distinct = max_rep["location_id"] != closest["location_id"]
+
+        self._render_pick_block(
+            self.closest_block, closest,
+            header_text=(f"Closest pick — {closest['jumps']} jump(s)" if distinct else "")
+        )
+        self.closest_max_buy = closest["max_buy"]
+        self.closest_block["use_btn"].configure(state=tk.NORMAL)
+
+        if distinct:
+            self._render_pick_block(
+                self.max_rep_block, max_rep,
+                header_text=f"Max-rep pick — {max_rep['jumps']} jump(s)"
+            )
+            self.max_rep_max_buy = max_rep["max_buy"]
+            self.max_rep_block["use_btn"].configure(state=tk.NORMAL)
+            self.max_rep_block["frame"].pack(fill=tk.X, pady=(8, 0))
+        else:
+            self.max_rep_max_buy = None
+            self.max_rep_block["use_btn"].configure(state=tk.DISABLED)
+            self.max_rep_block["frame"].pack_forget()
 
         self.calc_status_label.configure(
-            text=f"Broker: {broker_rate*100:.2f}%  ·  "
-                 f"Tax: {tax_rate*100:.2f}% @ this station's rep"
+            text=f"Broker: {closest['broker_rate']*100:.2f}%  ·  "
+                 f"Tax varies by station rep ({len(candidates)} tied @ top price)"
         )
         self.calc_btn.configure(state=tk.NORMAL)
-        self.use_price_btn.configure(state=tk.NORMAL)
+
+    def _render_pick_block(self, block: dict, c: dict, header_text: str):
+        """Fill a pick block's widgets with one candidate's resolved data."""
+        block["header"].configure(text=header_text)
+        info = c.get("station_info") or {}
+        station_name = info.get("name") or f"Station {c['location_id']}"
+        block["station"].configure(text=station_name)
+        if c.get("jumps") is not None:
+            block["distance"].configure(text=f"{c['jumps']} jump(s)")
+        else:
+            block["distance"].configure(text="?")
+        block["standings"].configure(
+            text=f"Corp {c['corp_std']:.2f}  ·  Faction {c['faction_std']:.2f}"
+        )
+        block["tax"].configure(text=f"{c['tax_rate']*100:.2f}%")
+        block["max_buy"].configure(text=f"{c['max_buy']:,.2f} ISK")
 
     def _use_calculated_price(self):
         """Copy calculated max buy price into the Alert if price UNDER field."""
         if self.calculated_max_buy is not None and hasattr(self, "price_under_var"):
             self.price_under_var.set(str(int(self.calculated_max_buy)))
+
+    def _use_closest_price(self):
+        """Copy the closest-pick max-buy into the Alert if price UNDER field."""
+        if self.closest_max_buy is not None and hasattr(self, "price_under_var"):
+            self.price_under_var.set(str(int(self.closest_max_buy)))
+
+    def _use_max_rep_price(self):
+        """Copy the max-rep-pick max-buy into the Alert if price UNDER field."""
+        if self.max_rep_max_buy is not None and hasattr(self, "price_under_var"):
+            self.price_under_var.set(str(int(self.max_rep_max_buy)))
