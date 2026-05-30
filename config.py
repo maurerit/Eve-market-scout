@@ -7,7 +7,7 @@ The values below are kept for reference/documentation only.
 # =============================================================================
 # APP VERSION - Update this single line to change version everywhere
 # =============================================================================
-APP_VERSION = "3.0 live"
+APP_VERSION = "3.1 live"
 
 # Region IDs
 JITA_REGION_ID = 10000002  # The Forge
@@ -130,7 +130,10 @@ MIN_SECURITY_STATUS = 0.45  # High-sec only (0.5+ rounds to high, 0.45 is safe t
 # API settings
 ESI_BASE_URL = "https://esi.evetech.net/latest"
 MAX_CONCURRENT_REQUESTS = 20
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT = 60  # total per-request wall-clock; doubled from 30 so a
+                      # single transfer can still finish on a throttled link.
+                      # On timeouts, ESICl._fetch_pages_staged re-pulls just
+                      # the failed pages at progressively lower concurrency.
 
 # User-Agent sent on every ESI request. CCP's best-practices doc says apps
 # SHOULD identify themselves; anonymous traffic is what gets banned first

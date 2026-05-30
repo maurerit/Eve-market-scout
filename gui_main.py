@@ -17,6 +17,7 @@ from gui_npc_orders import NPCOrdersTabManager
 from gui_tracking import TrackingTabManager
 from gui_crosshub import CrossHubDisplayManager
 from gui_demand_tab import DemandTabManager
+from gui_contracts import ContractsTabManager
 from gui_stockmarket import StockMarketTab
 from gui_main_controls import MainControlsMixin
 from gui_main_scan import MainScanMixin
@@ -159,6 +160,15 @@ class MarketScoutGUI(MainControlsMixin, MainScanMixin):
             set_status=self._set_status,
         )
         
+        # Initialize Contracts tab (manual public-contract search). Self-
+        # contained: owns its own ContractsDB/engine; no cross-wiring needed.
+        self.contracts_manager = ContractsTabManager(
+            self.notebook,
+            get_client=self.get_client,
+            set_status=self._set_status,
+            root=self.root,
+        )
+
         # Connect deals manager to stock market for context menu
         self.deals_manager.stock_market_tab = self.stock_market_tab
         

@@ -22,6 +22,13 @@ from type_name_mixin import TypeNameMixin
 DEBUG_ESI = False
 
 
+class ESIConnectionHaltedError(RuntimeError):
+    """Raised when ESI has been hard-halted after repeated timeouts at
+    minimum concurrency (budget already 1 and still failing). The link
+    can't move the data, so all external requests stop. Cleared only by
+    restarting the app."""
+
+
 class ESIClient(TypeNameMixin):
     """Async client for EVE ESI API."""
 
@@ -34,6 +41,15 @@ class ESIClient(TypeNameMixin):
         # are GC'd; cleanup is a TODO for later.
         self._per_loop: dict[int, dict] = {}
         self._per_loop_lock = threading.Lock()
+
+        # Staged-retry hard-halt flag (in-memory, resets every launch — never
+        # persisted). Order pulls retry timed-out pages at progressively lower
+        # concurrency (see _fetch_pages_staged); if pages still time out at
+        # concurrency 1 the link can't move the data, so we set _esi_halted,
+        # alert the user once, and refuse all further ESI requests until the
+        # app is restarted. See _check_halted / _set_halted.
+        self._esi_halted = False
+        self._adapt_lock = threading.Lock()
 
         self.type_name_cache: dict[int, str] = {}
         self.system_cache: dict[int, dict] = {}
@@ -113,6 +129,134 @@ class ESIClient(TypeNameMixin):
     @session.setter
     def session(self, value):
         self._get_loop_state()["session"] = value
+
+    # =========================================================================
+    # Staged-retry concurrency — finish the current demand without stacking
+    # new requests on a struggling link (in-memory only, resets every launch)
+    # =========================================================================
+
+    def _check_halted(self):
+        """Raise if ESI has been hard-halted after a min-load failure.
+
+        Called at the entry of every external-request path so that, once
+        halted, no further requests go out until the app restarts.
+        """
+        if self._esi_halted:
+            raise ESIConnectionHaltedError(
+                "ESI halted after timeouts at minimum concurrency"
+            )
+
+    def _set_halted(self, endpoint: str):
+        """Flip the hard-halt flag and alert the user once."""
+        notify = False
+        with self._adapt_lock:
+            if not self._esi_halted:
+                self._esi_halted = True
+                notify = True
+        if notify:
+            print(
+                f"[ESI-Adapt] HALT — {endpoint} still timing out at "
+                f"concurrency 1; stopping all ESI requests until restart"
+            )
+            self._notify_halt()
+
+    async def _fetch_pages_staged(
+        self, endpoint: str, pages: list[int]
+    ) -> dict[int, list]:
+        """Fetch `pages` of one region, retrying timed-out pages at
+        progressively lower concurrency: 20 -> 10 -> 5 -> 2 -> 1.
+
+        Each wave runs to completion (every page resolves to data, empty, or
+        a timeout) BEFORE the next, narrower wave starts — so we only ever
+        re-attempt the same outstanding demand, never stack fresh requests on
+        a link that's already struggling. That's the difference from a global
+        dial: the in-flight count for the *failing* pages is actually bounded.
+
+        Returns {page -> orders}. 404 (stale pagination) counts as an empty,
+        resolved page. If pages still time out at concurrency 1, the link
+        can't move the data — hard-halt and raise ESIConnectionHaltedError.
+        """
+        results: dict[int, list] = {}
+        remaining = list(pages)
+        concurrency = MAX_CONCURRENT_REQUESTS
+
+        while remaining:
+            self._check_halted()
+            sem = asyncio.Semaphore(concurrency)
+            cur = concurrency  # bind for the closure / log lines below
+            print(
+                f"[ESI-Adapt] {endpoint}: fetching {len(remaining)} page(s) "
+                f"at concurrency {cur}"
+            )
+
+            async def fetch_one(p: int):
+                async with sem:
+                    try:
+                        orders = await self._get(endpoint, {"page": p})
+                        return p, orders
+                    except aiohttp.ClientResponseError as e:
+                        if e.status == 404:
+                            return p, []  # page gone (stale pagination)
+                        raise
+                    except (asyncio.TimeoutError, TimeoutError):
+                        # Live heartbeat — surface each timeout as it happens
+                        # so a slow wave doesn't look like a hang.
+                        print(
+                            f"[ESI] Timeout on {endpoint} page {p} "
+                            f"(concurrency {cur})"
+                        )
+                        return p, None  # mark for a gentler retry wave
+
+            wave = await asyncio.gather(*[fetch_one(p) for p in remaining])
+
+            failed = []
+            for p, orders in wave:
+                if orders is None:
+                    failed.append(p)
+                else:
+                    results[p] = orders
+
+            print(
+                f"[ESI-Adapt] {endpoint}: concurrency {cur} wave done — "
+                f"{len(remaining) - len(failed)} ok, {len(failed)} timed out"
+            )
+
+            if not failed:
+                break
+
+            if concurrency <= 1:
+                self._set_halted(endpoint)
+                raise ESIConnectionHaltedError(
+                    f"{len(failed)} page(s) on {endpoint} still timing out "
+                    f"at concurrency 1"
+                )
+
+            old = concurrency
+            concurrency = max(1, concurrency // 2)
+            print(
+                f"[ESI-Adapt] {len(failed)} page(s) on {endpoint} timed out "
+                f"— retrying just those at concurrency {old} -> {concurrency}"
+            )
+            remaining = failed
+
+        return results
+
+    def _notify_halt(self):
+        """Pop a one-time user-facing error that ESI has been halted."""
+        msg = (
+            "EVE ESI requests are timing out even at minimum load — your "
+            "internet connection appears too slow or throttled to fetch "
+            "market data.\n\nAll ESI requests have been stopped. Restart the "
+            "app once your connection is back to normal."
+        )
+        try:
+            from tk_queue import submit
+            import tkinter.messagebox as messagebox
+            submit(lambda: messagebox.showerror(
+                "Connection Problem — ESI Halted", msg
+            ))
+        except Exception as e:
+            print(f"[ESI-Adapt] could not show halt dialog: {e}")
 
     def reset_for_new_loop(self):
         """No-op kept for backward compatibility.
@@ -335,6 +479,7 @@ class ESIClient(TypeNameMixin):
         any other 4xx/5xx falls through to `raise_for_status()` as before so
         existing callers (e.g. `_get_page_safe` swallowing 404) keep working.
         """
+        self._check_halted()
         url = f"{ESI_BASE_URL}{endpoint}"
         await self._await_rate_limit_pause()
         async with self.semaphore:
@@ -520,6 +665,7 @@ class ESIClient(TypeNameMixin):
                     self._apply_earliest_expires(cache_entry.get('expires'))
                     return cached
 
+            self._check_halted()
             all_orders = []
 
             url = f"{ESI_BASE_URL}/markets/{region_id}/orders/"
@@ -554,12 +700,13 @@ class ESIClient(TypeNameMixin):
                         break
 
             if total_pages > 1:
-                tasks = [
-                    self._get_page_safe(f"/markets/{region_id}/orders/", p)
-                    for p in range(2, total_pages + 1)
-                ]
-                results = await asyncio.gather(*tasks)
-                for page_orders in results:
+                # Staged retry: pages 2..N as one unit of demand, timed-out
+                # pages re-attempted at progressively lower concurrency rather
+                # than stacking fresh requests on a struggling link.
+                page_results = await self._fetch_pages_staged(
+                    orders_endpoint, list(range(2, total_pages + 1))
+                )
+                for page_orders in page_results.values():
                     if page_orders:
                         all_orders.extend(page_orders)
 

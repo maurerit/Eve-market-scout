@@ -283,6 +283,54 @@ class SDEManager:
         """Get packaged volume in m3 for a type."""
         info = self.get_type_info(type_id)
         return info.volume if info else None
+
+    def search_types_by_name(self, query: str, limit: int = 50,
+                             published_only: bool = True) -> list[dict]:
+        """Resolve a typed item name to candidate type_ids via the local SDE.
+
+        Powers the Contracts tab's search box: the user must resolve to a real
+        type_id before a contract search runs (no blank search — that's also
+        what blocks an accidental "search everything"). Returns
+        [{type_id, name}, ...] ordered by an exact-match-first, then
+        prefix-match, then shortest-name heuristic so the obvious item floats
+        to the top of the dropdown.
+
+        Matching is case-insensitive substring (LIKE %query%). Returns [] for
+        an empty/whitespace query or if the SDE isn't present.
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        try:
+            conn = self._get_conn()
+            where = "name LIKE ? COLLATE NOCASE"
+            params: list = [f"%{q}%"]
+            if published_only:
+                where += " AND published = 1"
+            cursor = conn.execute(
+                f"SELECT type_id, name FROM types WHERE {where} "
+                f"ORDER BY length(name) ASC LIMIT ?",
+                [*params, int(limit) * 4],
+            )
+            rows = [{"type_id": r["type_id"], "name": r["name"]} for r in cursor]
+            conn.close()
+        except Exception:
+            return []
+
+        ql = q.lower()
+
+        def _rank(row: dict) -> tuple:
+            n = row["name"].lower()
+            if n == ql:
+                bucket = 0
+            elif n.startswith(ql):
+                bucket = 1
+            else:
+                bucket = 2
+            return (bucket, len(row["name"]), row["name"].lower())
+
+        rows.sort(key=_rank)
+        return rows[:limit]
     
     def has_market_group_data(self) -> bool:
         """Whether the `market_groups` table exists in this SDE install.
