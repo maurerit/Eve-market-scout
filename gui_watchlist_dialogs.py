@@ -8,7 +8,7 @@ for backward compatibility. The actual implementations are split across:
 """
 
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Re-export all dialog classes for backward compatibility
 from gui_watchlist_add import AddItemDialog
@@ -26,7 +26,8 @@ class WatchlistItem:
     price_over: Optional[float] = None       # Alert if sell price rises above this
     margin_over: Optional[float] = None      # Alert if margin % exceeds this
     notes: str = ""                          # Personal notes
-    
+    categories: list[str] = field(default_factory=list)  # User-defined category tags (multi)
+
     # Current market data (populated during scan)
     current_price: Optional[float] = None
     current_margin: Optional[float] = None
