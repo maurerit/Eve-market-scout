@@ -132,6 +132,20 @@ class MainControlsMixin:
         )
         self.sound_cb.pack(side=tk.LEFT, padx=5)
 
+        # Stock Market master on/off switch. Lives here (not on the SM tab's
+        # own toolbar) because that toolbar is covered by the cold-start lock
+        # overlay during load — this spot stays reachable so the user can turn
+        # SM off mid-load. Initial value + sync callback are wired in gui_main
+        # once stock_market_tab exists (it's created after the control bar).
+        self.sm_master_var = tk.BooleanVar(value=True)
+        self.sm_master_cb = ttk.Checkbutton(
+            control_frame,
+            text="Stock Market",
+            variable=self.sm_master_var,
+            command=self._toggle_stock_market_master
+        )
+        self.sm_master_cb.pack(side=tk.LEFT, padx=5)
+
         # Open Data Folder button
         self.data_folder_btn = ttk.Button(
             control_frame,
@@ -252,6 +266,11 @@ class MainControlsMixin:
     def _toggle_sound(self):
         """Toggle sound alerts on/off."""
         self.sound_enabled = self.sound_var.get()
+
+    def _toggle_stock_market_master(self):
+        """Toggle the Stock Market master switch (all SM auto-processing)."""
+        if hasattr(self, "stock_market_tab") and self.stock_market_tab:
+            self.stock_market_tab.set_enabled(self.sm_master_var.get())
 
     def _open_data_folder(self):
         """Open the data folder in system file manager."""

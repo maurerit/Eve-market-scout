@@ -19,7 +19,7 @@ from gui_stockmarket_hub import StockMarketHubPanel
 from gui_stockmarket_actions import StockMarketActionsMixin
 from gui_stockmarket_overlay import StockMarketOverlayMixin
 from gui_stockmarket_burst import StockMarketBurstMixin
-from gui_stockmarket_coldstart import StockMarketColdStartMixin
+from gui_stockmarket_coldstart import StockMarketColdStartMixin, PhaseState
 from stockmarket_filters import get_hub_burst_tracker
 
 if TYPE_CHECKING:
@@ -43,7 +43,13 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         
         # Load settings
         self.settings = load_settings()
-        
+
+        # Optional callback fired when the master on/off flag flips, so an
+        # external control (the main-window checkbutton) can mirror state when
+        # the change originates here (e.g. the off-overlay "Turn On" button).
+        # Registered via set_enabled_changed_callback() after construction.
+        self._on_enabled_changed: Optional[Callable[[bool], None]] = None
+
         # Profile manager (shared across all hubs)
         self.profiles = ProfileManager(
             buy_percentile=self.settings.buy_percentile,
@@ -81,7 +87,14 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         # — re-enable it by un-commenting the after() call below if
         # the orchestrator regresses.
         # self.frame.after(500, self._startup_refresh)
-        self.frame.after(500, self._start_cold_start_worker)
+        #
+        # Master off-switch: when Stock Market is disabled we skip the
+        # cold-start worker entirely (the whole point of the toggle is a
+        # fast, work-free launch). The locked overlay shows the "off"
+        # state instead; flipping the main-bar toggle on spawns the worker
+        # live. See set_enabled.
+        if self.settings.stock_market_enabled:
+            self.frame.after(500, self._start_cold_start_worker)
         
         # Register callback so background import can trigger refresh
         # + material filter after profile building completes
@@ -102,12 +115,25 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         toolbar = ttk.Frame(self.frame)
         toolbar.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Button(toolbar, text="Add Item", command=self._on_add_item).pack(side=tk.LEFT, padx=2)
-        ttk.Button(toolbar, text="Download SDE", command=self._on_download_sde).pack(side=tk.LEFT, padx=2)
-        ttk.Button(toolbar, text="Refresh Prices", command=self._on_refresh_prices).pack(side=tk.LEFT, padx=2)
-        ttk.Button(toolbar, text="Reset Profiles", command=self._on_reset_profiles).pack(side=tk.LEFT, padx=2)
+        # NOTE: the master on/off switch lives on the MAIN scanner control bar
+        # (gui_main_controls.py), not here — this toolbar is covered by the
+        # locked overlay during cold-start load, so the switch has to sit
+        # somewhere always-reachable to allow turning off mid-load. The buttons
+        # below grey out when off via _set_dependent_controls_state.
+        self.btn_add_item = ttk.Button(toolbar, text="Add Item", command=self._on_add_item)
+        self.btn_add_item.pack(side=tk.LEFT, padx=2)
+        self.btn_download_sde = ttk.Button(toolbar, text="Download SDE", command=self._on_download_sde)
+        self.btn_download_sde.pack(side=tk.LEFT, padx=2)
+        self.btn_refresh_prices = ttk.Button(toolbar, text="Refresh Prices", command=self._on_refresh_prices)
+        self.btn_refresh_prices.pack(side=tk.LEFT, padx=2)
+        self.btn_reset_profiles = ttk.Button(toolbar, text="Reset Profiles", command=self._on_reset_profiles)
+        self.btn_reset_profiles.pack(side=tk.LEFT, padx=2)
+        # Settings stays enabled while off so the toggle/config is reachable.
         ttk.Button(toolbar, text="Settings", command=self._on_settings).pack(side=tk.LEFT, padx=2)
-        
+
+        # Grey out dependent buttons if launched in the off state.
+        self._set_dependent_controls_state(self.settings.stock_market_enabled)
+
         # Spacer
         ttk.Frame(toolbar).pack(side=tk.LEFT, expand=True)
         
@@ -223,6 +249,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
     _HOLDINGS_FRESHEN_MIN_INTERVAL = 60  # seconds; rapid tab-switch debounce
 
     def _on_hub_tab_changed(self, event=None):
+        if self._stock_market_off():
+            return
         import time as _pt
         _pt0 = _pt.perf_counter()
         hub_key = self._get_current_hub_key()
@@ -264,6 +292,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         )
 
     def _freshen_holdings_for_hub(self, hub_key, panel, client):
+        if self._stock_market_off():
+            return
         if not client:
             return
         holdings_panel = getattr(panel, "holdings_panel", None)
@@ -335,13 +365,84 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
             self.sde_label.configure(text=f"SDE: {count:,}")
         else:
             self.sde_label.configure(text="SDE: Not installed")
-    
+
+    # =========================================================================
+    # Master on/off switch
+    # =========================================================================
+
+    def _set_dependent_controls_state(self, enabled: bool):
+        """Enable/disable the toolbar buttons that only make sense when on."""
+        state = tk.NORMAL if enabled else tk.DISABLED
+        for btn in (
+            getattr(self, "btn_add_item", None),
+            getattr(self, "btn_download_sde", None),
+            getattr(self, "btn_refresh_prices", None),
+            getattr(self, "btn_reset_profiles", None),
+        ):
+            if btn is not None:
+                btn.configure(state=state)
+
+    def set_enabled(self, enabled: bool):
+        """Master switch entry point. Driven by the main-window checkbutton and
+        the off-overlay 'Turn On' button. Persists the flag, greys/un-greys the
+        dependent toolbar buttons, and either starts cold-start live (on) or
+        shows the off overlay (off)."""
+        enabled = bool(enabled)
+        self.settings.stock_market_enabled = enabled
+        save_settings(self.settings)
+        self._set_dependent_controls_state(enabled)
+
+        # Bump the cold-start token on every flip: this cancels any worker
+        # still running (it bails at its next checkpoint) and gives a fresh
+        # run its own token. See _cold_start_check_cancel.
+        self._cold_start_token += 1
+
+        if enabled:
+            print("[StockMarket] Enabled — starting cold-start worker")
+            # Reset phase state so the locked overlay re-locks and shows
+            # build progress during the fresh cold-start (a prior run left
+            # phase_state.done=True).
+            self.phase_state = PhaseState()
+            self._show_phase_progress_overlay(self.phase_state)  # immediate lock
+            self._start_cold_start_worker()
+        else:
+            print("[StockMarket] Disabled — auto-processing paused")
+            # No need to interrupt any in-flight worker; every auto entry
+            # point is gated on settings.stock_market_enabled and will no-op
+            # from here. Show the off overlay immediately; the lock poll
+            # keeps it there.
+            self._show_off_overlay()
+
+        # Mirror state to any external control (main-window checkbutton) when
+        # the change originated here (overlay button). Setting a BooleanVar
+        # programmatically does not re-fire its checkbutton command, so no loop.
+        if self._on_enabled_changed:
+            try:
+                self._on_enabled_changed(enabled)
+            except Exception as e:
+                print(f"[StockMarket] enabled-changed callback error: {e}")
+
+    def is_enabled(self) -> bool:
+        """Current master on/off state."""
+        return not self._stock_market_off()
+
+    def set_enabled_changed_callback(self, callback: Optional[Callable[[bool], None]]):
+        """Register a callback invoked with the new state whenever the master
+        switch is flipped from inside the tab (e.g. the overlay button)."""
+        self._on_enabled_changed = callback
+
+    def _stock_market_off(self) -> bool:
+        """True when the master switch is off — gate for all auto entry points."""
+        return not getattr(self.settings, "stock_market_enabled", True)
+
     # =========================================================================
     # External API
     # =========================================================================
     
     def refresh_current_hub_prices(self):
         """Public wrapper for external refresh triggers (scan complete, ESI sync)."""
+        if self._stock_market_off():
+            return
         self._on_refresh_prices()
     
     def add_item_from_external(self, type_id: int, region_id: int, station_id: int, type_name: str = ""):
@@ -366,6 +467,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
             orders: List of market orders from scan
             region_id: Region the orders are from (if known)
         """
+        if self._stock_market_off():
+            return
         import time as _pt
         _pt0 = _pt.perf_counter()
         if not orders:
@@ -427,6 +530,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
     
     def sync_orders_to_holdings(self, orders: List[dict], region_id: int):
         """Sync ESI orders to holdings for appropriate hub."""
+        if self._stock_market_off():
+            return
         for hub_key, panel in self.hub_panels.items():
             config = get_hub_config(hub_key)
             if config["region_id"] == region_id:
@@ -442,6 +547,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         Args:
             wallet: ESIWallet instance with fetched transactions
         """
+        if self._stock_market_off():
+            return
         if not wallet or not wallet.transactions:
             return
         
@@ -472,6 +579,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         skip recording this refresh; try again next time. After JOURNAL_AGE_LIMIT_DAYS,
         fall back to a skill-based estimate (journal retention ~30 days).
         """
+        if self._stock_market_off():
+            return
         import time as _pt
         _pt0 = _pt.perf_counter()
         if not char_orders and not wallet:
@@ -638,6 +747,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         This ensures Stock Market has trend data for all profiled items,
         not just items that were candidates in the scan.
         """
+        if self._stock_market_off():
+            return
         if not self.get_client:
             print("[StockMarket] No client available for history fetch")
             return
@@ -770,6 +881,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
         already ran today for a hub, that hub falls back to a normal
         async refresh (reading existing cached results).
         """
+        if self._stock_market_off():
+            return
         print(f"[StockMarket] === _apply_material_filter_all: "
               f"{len(self.hub_panels)} hubs ===")
         for panel in self.hub_panels.values():
@@ -859,6 +972,8 @@ class StockMarketTab(StockMarketActionsMixin, StockMarketOverlayMixin, StockMark
 
     def _on_scanner_tick_complete(self):
         """Called by the scanner after each scan finishes."""
+        if self._stock_market_off():
+            return
         self._run_daily_hub_burst()
         hub_key = self._active_hub_key or self._get_current_hub_key()
         if hub_key:

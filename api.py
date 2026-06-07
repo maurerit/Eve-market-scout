@@ -197,6 +197,17 @@ class ESIClient(TypeNameMixin):
                     except aiohttp.ClientResponseError as e:
                         if e.status == 404:
                             return p, []  # page gone (stale pagination)
+                        if e.status in (500, 502, 503, 504):
+                            # Transient ESI/gateway error (500 backend error,
+                            # 502/503/504 gateway) — treat like a timeout: mark
+                            # for a gentler retry wave instead of aborting the
+                            # whole scan. Persistent failures still resolve via
+                            # the concurrency-1 hard-halt below.
+                            print(
+                                f"[ESI] HTTP {e.status} on {endpoint} page {p} "
+                                f"(concurrency {cur}) — retrying"
+                            )
+                            return p, None
                         raise
                     except (asyncio.TimeoutError, TimeoutError):
                         # Live heartbeat — surface each timeout as it happens

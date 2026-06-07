@@ -67,10 +67,25 @@ class StockMarketOverlayMixin:
             command=self._on_restart_prompt
         )
         # Not packed initially - shown when restart needed
-        
+
+        # Turn-on button (shown only by the "off" overlay). Drives set_enabled,
+        # the same path as the main control-bar checkbutton.
+        self.overlay_enable_btn = ttk.Button(
+            center,
+            text="Turn On Stock Market",
+            command=self._on_turn_on_clicked
+        )
+        # Not packed initially - shown when the master switch is off
+
         # Track lock state
         self._is_locked = False
         self._lock_poll_job = None
+
+    def _on_turn_on_clicked(self):
+        """Overlay 'Turn On Stock Market' button — flips the master switch on.
+        set_enabled mirrors the new state back to the main-window checkbutton
+        via the registered enabled-changed callback."""
+        self.set_enabled(True)
     
     def _poll_lock_state(self):
         """Poll background import status and update overlay.
@@ -82,6 +97,13 @@ class StockMarketOverlayMixin:
         period when only phase 0 is implemented.
         """
         try:
+            # Master switch off → show the "off" overlay and keep polling
+            # at a slow cadence so flipping it back on is picked up promptly.
+            if not getattr(self.settings, "stock_market_enabled", True):
+                self._show_off_overlay()
+                self._lock_poll_job = self.frame.after(1000, self._poll_lock_state)
+                return
+
             ps = getattr(self, "phase_state", None)
             if ps is not None:
                 if ps.error:
@@ -179,6 +201,7 @@ class StockMarketOverlayMixin:
         self.overlay_progress.pack(pady=(0, 10))
         self.overlay_progress_text.pack(pady=(0, 20))
         self.overlay_restart_btn.pack_forget()
+        self.overlay_enable_btn.pack_forget()
     
     def _show_restart_overlay(self):
         """Show overlay prompting for restart."""
@@ -198,6 +221,7 @@ class StockMarketOverlayMixin:
         
         self.overlay_progress.pack_forget()
         self.overlay_progress_text.pack_forget()
+        self.overlay_enable_btn.pack_forget()
         self.overlay_restart_btn.pack(pady=(10, 0))
     
     def _show_waiting_overlay(self):
@@ -215,13 +239,40 @@ class StockMarketOverlayMixin:
             text="Stock Market features require 3-year price history.\n"
                  "Use the scanner - full history will download in background."
         )
-        
+
         self.overlay_progress.pack_forget()
         self.overlay_progress_text.pack_forget()
         self.overlay_restart_btn.pack_forget()
+        self.overlay_enable_btn.pack_forget()
     
+    def _show_off_overlay(self):
+        """Show overlay for the master 'Stock Market off' state."""
+        if not self._is_locked:
+            self._is_locked = True
+            self.locked_overlay.place(
+                in_=self.frame, relx=0, rely=0,
+                relwidth=1.0, relheight=1.0
+            )
+            self.locked_overlay.lift()
+
+        try:
+            self.overlay_progress.stop()
+        except Exception:
+            pass
+        self.overlay_title.configure(text="Stock Market is Off")
+        self.overlay_status.configure(
+            text="Automatic data builds and ESI pulls are paused.\n"
+                 "Turn it back on to resume profile builds, hub pulls,\n"
+                 "material filter and leading indicators."
+        )
+        self.overlay_progress.pack_forget()
+        self.overlay_progress_text.pack_forget()
+        self.overlay_restart_btn.pack_forget()
+        self.overlay_enable_btn.pack(pady=(10, 0))
+
     def _hide_overlay(self):
         """Hide the locked overlay - tab is usable."""
+        self.overlay_enable_btn.pack_forget()
         if self._is_locked:
             self._is_locked = False
             self.locked_overlay.place_forget()
@@ -276,6 +327,7 @@ class StockMarketOverlayMixin:
         self.overlay_progress.pack(pady=(0, 10))
         self.overlay_progress_text.pack(pady=(0, 20))
         self.overlay_restart_btn.pack_forget()
+        self.overlay_enable_btn.pack_forget()
 
     def _show_phase_error_overlay(self, error: str):
         """Show overlay when cold-start orchestrator hits a fatal error."""
@@ -299,6 +351,7 @@ class StockMarketOverlayMixin:
         self.overlay_progress.pack_forget()
         self.overlay_progress_text.pack_forget()
         self.overlay_restart_btn.pack_forget()
+        self.overlay_enable_btn.pack_forget()
 
     def _on_restart_prompt(self):
         """Handle restart button click."""

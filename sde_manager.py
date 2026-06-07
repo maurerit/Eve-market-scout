@@ -34,6 +34,10 @@ SDE_VERSION_FILE = "sde_version.json"
 FUZZWORK_BASE = "https://www.fuzzwork.co.uk/dump/latest"
 FUZZWORK_TYPES_URL = f"{FUZZWORK_BASE}/invTypes.csv.bz2"
 FUZZWORK_MARKET_GROUPS_URL = f"{FUZZWORK_BASE}/invMarketGroups.csv.bz2"
+# Reprocessing yields: typeID -> materialTypeID -> quantity (per portion_size
+# units of the source type). Powers the Reprocess-or-Sell module. Covers
+# non-mineral outputs too (Morphite, components), so materialTypeID is generic.
+FUZZWORK_TYPE_MATERIALS_URL = f"{FUZZWORK_BASE}/invTypeMaterials.csv.bz2"
 
 # How old before we suggest updating (days)
 SDE_STALE_DAYS = 30
@@ -351,6 +355,45 @@ class SDEManager:
         except Exception:
             return False
 
+    def has_type_materials_data(self) -> bool:
+        """Whether the `type_materials` table exists in this SDE install.
+
+        Older installs predate the Reprocess-or-Sell module and only have
+        `types`/`market_groups`. The module should prompt a re-download when
+        this returns False rather than silently showing empty yields.
+        """
+        try:
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name = 'type_materials'"
+            )
+            row = cursor.fetchone()
+            conn.close()
+            return row is not None
+        except Exception:
+            return False
+
+    def get_type_materials(self, type_id: int) -> list[tuple[int, int]]:
+        """Reprocessing output for one type: [(material_type_id, quantity), ...].
+
+        Quantity is the SDE base yield per `portion_size` units of the source
+        type (before station rate / skill modifiers). Returns [] if the type
+        has no materials, or if this SDE install lacks the table.
+        """
+        try:
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "SELECT material_type_id, quantity FROM type_materials "
+                "WHERE type_id = ?",
+                (type_id,),
+            )
+            rows = [(r["material_type_id"], r["quantity"]) for r in cursor]
+            conn.close()
+            return rows
+        except Exception:
+            return []
+
     def get_type_info_bulk(self, type_ids: list[int]) -> Dict[int, TypeInfo]:
         """Bulk fetch TypeInfo for many type_ids in one connection."""
         result: Dict[int, TypeInfo] = {}
@@ -546,14 +589,19 @@ class SDEManager:
             timeout = aiohttp.ClientTimeout(total=120)
             async with aiohttp.ClientSession(connector=make_connector(), timeout=timeout) as session:
                 types_bytes = await _download(session, FUZZWORK_TYPES_URL, "invTypes")
-                update("Downloading market-group tree...", 40)
+                update("Downloading market-group tree...", 35)
                 market_groups_bytes = await _download(
                     session, FUZZWORK_MARKET_GROUPS_URL, "invMarketGroups"
+                )
+                update("Downloading reprocessing yields...", 45)
+                type_materials_bytes = await _download(
+                    session, FUZZWORK_TYPE_MATERIALS_URL, "invTypeMaterials"
                 )
 
             update("Decompressing...", 50)
             csv_data = bz2.decompress(types_bytes).decode("utf-8")
             market_groups_csv = bz2.decompress(market_groups_bytes).decode("utf-8")
+            type_materials_csv = bz2.decompress(type_materials_bytes).decode("utf-8")
             
             update("Building database...", 55)
             

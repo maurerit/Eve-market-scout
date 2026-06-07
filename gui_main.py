@@ -159,7 +159,13 @@ class MarketScoutGUI(MainControlsMixin, MainScanMixin):
             get_client=self.get_client,
             set_status=self._set_status,
         )
-        
+
+        # Sync the main control-bar "Stock Market" master switch to the tab's
+        # persisted on/off state, and register a callback so the off-overlay's
+        # "Turn On" button also keeps the checkbutton in sync.
+        self.sm_master_var.set(self.stock_market_tab.is_enabled())
+        self.stock_market_tab.set_enabled_changed_callback(self.sm_master_var.set)
+
         # Initialize Contracts tab (manual public-contract search). Self-
         # contained: owns its own ContractsDB/engine; no cross-wiring needed.
         self.contracts_manager = ContractsTabManager(

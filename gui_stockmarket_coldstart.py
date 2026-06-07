@@ -28,6 +28,11 @@ from typing import Optional
 from config import TRADE_HUBS
 
 
+class _ColdStartCancelled(Exception):
+    """Raised internally to unwind the cold-start worker when the Stock Market
+    master switch is turned off (or a newer run supersedes this one)."""
+
+
 @dataclass
 class PhaseState:
     """Shared state read by the locked overlay each poll tick.
@@ -78,11 +83,25 @@ class StockMarketColdStartMixin:
         """Initialise cold-start state.  Call from __init__."""
         self.phase_state = PhaseState()
         self._cold_start_thread: Optional[threading.Thread] = None
+        # Monotonic token, bumped on every master on/off flip (see
+        # set_enabled). The running worker captures it as _cold_start_run_token
+        # at start; a mismatch — or the master switch going off — makes
+        # _cold_start_check_cancel bail, aborting an in-progress load.
+        self._cold_start_token = 0
+        self._cold_start_run_token = 0
 
     def _start_cold_start_worker(self):
-        """Spawn the worker thread.  Idempotent."""
+        """Spawn the worker thread.  Idempotent.
+
+        If a previous (now-cancelled) worker is still winding down — e.g. it
+        was switched off mid-load and is finishing its current ESI call — we
+        retry shortly instead of skipping, so a quick off→on doesn't leave the
+        tab stuck on the lock overlay with no worker behind it.
+        """
         if self._cold_start_thread and self._cold_start_thread.is_alive():
-            print("[ColdStart] Worker already running, skipping spawn")
+            if self._stock_market_off():
+                return  # toggled back off in the meantime; nothing to start
+            self.frame.after(500, self._start_cold_start_worker)
             return
 
         self._cold_start_thread = threading.Thread(
@@ -92,23 +111,43 @@ class StockMarketColdStartMixin:
         )
         self._cold_start_thread.start()
 
+    def _cold_start_check_cancel(self):
+        """Raise _ColdStartCancelled if the master switch was turned off or a
+        newer cold-start run superseded this one. Called at phase boundaries
+        and inside the long per-hub/per-region loops so switching Stock Market
+        off aborts an in-progress load promptly."""
+        if (self._stock_market_off()
+                or self._cold_start_token != self._cold_start_run_token):
+            raise _ColdStartCancelled()
+
     def _cold_start_run(self):
         """Worker entry point.  Runs phases sequentially."""
+        self._cold_start_run_token = self._cold_start_token
         try:
             print("[ColdStart] === Worker thread started ===")
             detected = self._cold_start_phase0_detect()
             self._cold_start_log_detected(detected)
 
+            self._cold_start_check_cancel()
             self._cold_start_phase0_sde_industry(detected)
+            self._cold_start_check_cancel()
             self._cold_start_phase12_bg_import_observer(detected)
+            self._cold_start_check_cancel()
             self._cold_start_phase3_profiles(detected)
+            self._cold_start_check_cancel()
             self._cold_start_phase4_esi_burst(detected)
+            self._cold_start_check_cancel()
             self._cold_start_phase5_material_filter(detected)
+            self._cold_start_check_cancel()
             self._cold_start_phase6_leading_indicators(detected)
+            self._cold_start_check_cancel()
             self._cold_start_phase7_unlock(detected)
 
             print("[ColdStart] === Cold start complete ===")
             self.phase_state.done = True
+        except _ColdStartCancelled:
+            print("[ColdStart] === Cancelled (Stock Market switched off) ===")
+            # Leave phase_state.done False; the off overlay is already showing.
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -346,6 +385,7 @@ class StockMarketColdStartMixin:
         for region_idx, (hub_key, region_id, hub_name) in enumerate(
             regions_to_build, start=1
         ):
+            self._cold_start_check_cancel()
             print(f"[ColdStart] phase 3 [{region_idx}/{total_regions}]: "
                   f"{hub_name} (region {region_id})")
 
@@ -377,6 +417,8 @@ class StockMarketColdStartMixin:
                 )
                 print(f"[ColdStart] phase 3: {hub_name} done — "
                       f"{success:,} ok, {failed} failed")
+            except _ColdStartCancelled:
+                raise  # cancellation must unwind, not be swallowed below
             except Exception as e:
                 print(f"[ColdStart] phase 3: {hub_name} failed: {e}")
                 # Continue with remaining regions instead of bailing the
@@ -437,6 +479,7 @@ class StockMarketColdStartMixin:
                 for idx, (hub_key, region_id, hub_name) in enumerate(
                     stale, start=1
                 ):
+                    self._cold_start_check_cancel()
                     self.phase_state.phase_name = (
                         f"Pulling orders for {hub_name}"
                     )
@@ -449,6 +492,8 @@ class StockMarketColdStartMixin:
                         await client.get_market_orders(region_id)
                         tracker.mark_complete(hub_key)
                         print(f"[ColdStart] phase 4: {hub_name} done")
+                    except _ColdStartCancelled:
+                        raise
                     except Exception as e:
                         print(f"[ColdStart] phase 4: {hub_name} failed: {e}")
                     self.phase_state.current = idx
@@ -486,6 +531,7 @@ class StockMarketColdStartMixin:
             if region_id is None:
                 continue
 
+            self._cold_start_check_cancel()
             self.phase_state.current_phase = 5
             self.phase_state.phase_name = f"Material filter for {hub_name}"
             self.phase_state.current = 0
@@ -512,6 +558,8 @@ class StockMarketColdStartMixin:
                         "min_daily_volume", 0,
                     ),
                 )
+            except _ColdStartCancelled:
+                raise
             except Exception as e:
                 print(f"[ColdStart] phase 5: {hub_name} failed: {e}")
 
@@ -544,6 +592,7 @@ class StockMarketColdStartMixin:
             if region_id is None:
                 continue
 
+            self._cold_start_check_cancel()
             self.phase_state.current_phase = 6
             self.phase_state.phase_name = f"Leading indicators for {hub_name}"
             self.phase_state.current = 0
@@ -570,6 +619,8 @@ class StockMarketColdStartMixin:
                         "min_daily_volume", 0,
                     ),
                 )
+            except _ColdStartCancelled:
+                raise
             except Exception as e:
                 print(f"[ColdStart] phase 6: {hub_name} failed: {e}")
 

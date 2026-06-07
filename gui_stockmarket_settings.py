@@ -49,7 +49,15 @@ class StockMarketSettings:
 
     # Last active hub tab (restored on launch)
     active_hub_key: Optional[str] = None
-    
+
+    # Master on/off switch for all Stock Market auto-processing (cold-start
+    # builds, ESI hub bursts, holdings freshen, material filter, leading
+    # indicators). When False the tab shows an "off" overlay and skips every
+    # automatic data pull/compute. Persists across sessions so a disabled
+    # install launches fast (no cold-start worker). Scanner + contracts are
+    # unaffected. Default True = current behavior.
+    stock_market_enabled: bool = True
+
     def get_archive_path(self) -> Path:
         """Get archive path, using default if not set."""
         if self.archive_path:
@@ -71,6 +79,7 @@ class StockMarketSettings:
             peak_offset_pct=data.get("peak_offset_pct", DEFAULT_PEAK_OFFSET_PCT),
             min_daily_volume=data.get("min_daily_volume", DEFAULT_MIN_DAILY_VOLUME),
             active_hub_key=data.get("active_hub_key"),
+            stock_market_enabled=data.get("stock_market_enabled", True),
         )
 
 
@@ -413,8 +422,9 @@ class StockMarketSettingsDialog(tk.Toplevel):
             peak_offset_pct=peak_offset,
             min_daily_volume=min_volume,
             active_hub_key=self.settings.active_hub_key,
+            stock_market_enabled=self.settings.stock_market_enabled,
         )
-        
+
         # Save to disk
         if save_settings(new_settings):
             self.on_save(new_settings, needs_rebuild)
