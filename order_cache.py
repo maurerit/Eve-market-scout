@@ -70,6 +70,24 @@ class OrderCacheStore:
         print(f"[API] Using cached orders for region {region_id} (age: {age:.0f}s)")
         return cached['orders']
 
+    def peek_cached_orders(self, region_id: int,
+                           max_age_seconds: int) -> Optional[tuple]:
+        """Cached orders for consumers that tolerate ESI-expired data.
+
+        Unlike get_cached_orders, this only checks the timestamp age — the
+        stored ESI Expires is ignored, so a dump a few hours past its 5-min
+        market expiry is still returned. Use for derived/approximate displays
+        (not for the scanner, whose countdown timer the Expires check
+        protects). Returns (orders, age_seconds) or None.
+        """
+        cached = self._order_cache.get(region_id)
+        if not cached or not cached.get('orders'):
+            return None
+        age = (datetime.now(timezone.utc) - cached['timestamp']).total_seconds()
+        if age > max_age_seconds:
+            return None
+        return cached['orders'], age
+
     def _disk_cache_path(self, key_id: int) -> Optional[Path]:
         """Resolve on-disk cache path for a region id or structure id.
 
