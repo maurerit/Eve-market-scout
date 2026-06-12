@@ -30,7 +30,9 @@ INDUSTRY_DB_FILE = "sde_industry.db"
 INDUSTRY_VERSION_FILE = "sde_industry_version.json"
 
 # Fuzzwork URLs
-FUZZWORK_BASE = "https://www.fuzzwork.co.uk/dump/latest"
+# Fuzzwork moved the CSV exports into a csv/ subdirectory (mid-2026); the old
+# /dump/latest/*.csv paths now 404.
+FUZZWORK_BASE = "https://www.fuzzwork.co.uk/dump/latest/csv"
 MATERIALS_URL = f"{FUZZWORK_BASE}/industryActivityMaterials.csv"
 PRODUCTS_URL = f"{FUZZWORK_BASE}/industryActivityProducts.csv"
 
@@ -304,7 +306,9 @@ class SDEIndustryDB:
                         pct = int(start_pct + (downloaded / total_size) * (end_pct - start_pct))
                         update(f"Downloading... {downloaded // 1024}KB", pct)
                 
-                return b"".join(chunks).decode("utf-8")
+                # utf-8-sig: the current Fuzzwork CSVs start with a BOM,
+                # which would otherwise corrupt the first column name.
+                return b"".join(chunks).decode("utf-8-sig")
                 
         except Exception as e:
             update(f"Download error: {e}", start_pct)

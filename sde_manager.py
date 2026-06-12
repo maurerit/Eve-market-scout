@@ -31,13 +31,15 @@ SDE_VERSION_FILE = "sde_version.json"
 # Fuzzwork SDE downloads
 # invTypes for item-level data, invMarketGroups for the in-game market tree
 # (the same hierarchy shown when a player opens the Regional Market window).
-FUZZWORK_BASE = "https://www.fuzzwork.co.uk/dump/latest"
-FUZZWORK_TYPES_URL = f"{FUZZWORK_BASE}/invTypes.csv.bz2"
-FUZZWORK_MARKET_GROUPS_URL = f"{FUZZWORK_BASE}/invMarketGroups.csv.bz2"
+# Fuzzwork moved the CSV exports into a csv/ subdirectory and dropped the
+# .bz2 variants (mid-2026); the old /dump/latest/*.csv.bz2 paths now 404.
+FUZZWORK_BASE = "https://www.fuzzwork.co.uk/dump/latest/csv"
+FUZZWORK_TYPES_URL = f"{FUZZWORK_BASE}/invTypes.csv"
+FUZZWORK_MARKET_GROUPS_URL = f"{FUZZWORK_BASE}/invMarketGroups.csv"
 # Reprocessing yields: typeID -> materialTypeID -> quantity (per portion_size
 # units of the source type). Powers the Reprocess-or-Sell module. Covers
 # non-mineral outputs too (Morphite, components), so materialTypeID is generic.
-FUZZWORK_TYPE_MATERIALS_URL = f"{FUZZWORK_BASE}/invTypeMaterials.csv.bz2"
+FUZZWORK_TYPE_MATERIALS_URL = f"{FUZZWORK_BASE}/invTypeMaterials.csv"
 
 # How old before we suggest updating (days)
 SDE_STALE_DAYS = 30
@@ -599,9 +601,17 @@ class SDEManager:
                 )
 
             update("Decompressing...", 50)
-            csv_data = bz2.decompress(types_bytes).decode("utf-8")
-            market_groups_csv = bz2.decompress(market_groups_bytes).decode("utf-8")
-            type_materials_csv = bz2.decompress(type_materials_bytes).decode("utf-8")
+
+            # Fuzzwork now serves plain CSVs (with a UTF-8 BOM); keep bz2
+            # handling in case the compressed variants ever come back.
+            def _to_text(raw: bytes) -> str:
+                if raw[:3] == b"BZh":
+                    raw = bz2.decompress(raw)
+                return raw.decode("utf-8-sig")
+
+            csv_data = _to_text(types_bytes)
+            market_groups_csv = _to_text(market_groups_bytes)
+            type_materials_csv = _to_text(type_materials_bytes)
             
             update("Building database...", 55)
             
@@ -630,7 +640,19 @@ class SDEManager:
                 )
             """)
             conn.execute("CREATE INDEX idx_mg_parent ON market_groups(parent_group_id)")
-            
+
+            # Reprocessing yields. One row per (source type, output material).
+            # quantity is the base yield per portion_size units of type_id.
+            conn.execute("""
+                CREATE TABLE type_materials (
+                    type_id INTEGER NOT NULL,
+                    material_type_id INTEGER NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    PRIMARY KEY (type_id, material_type_id)
+                )
+            """)
+            conn.execute("CREATE INDEX idx_tm_type ON type_materials(type_id)")
+
             # Parse CSV
             # Fuzzwork invTypes columns:
             # typeID,groupID,typeName,description,mass,volume,capacity,portionSize,
@@ -706,6 +728,24 @@ class SDEManager:
                     mg_records,
                 )
 
+            # Import invTypeMaterials (reprocessing yields).
+            # Fuzzwork columns: typeID,materialTypeID,quantity
+            update("Importing reprocessing yields...", 96)
+            tm_records = []
+            for row in csv.DictReader(io.StringIO(type_materials_csv)):
+                tid = _parse_optional_int(row.get("typeID"))
+                mtid = _parse_optional_int(row.get("materialTypeID"))
+                qty = _parse_optional_int(row.get("quantity"))
+                if tid is None or mtid is None or qty is None:
+                    continue
+                tm_records.append((tid, mtid, qty))
+            if tm_records:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO type_materials "
+                    "(type_id, material_type_id, quantity) VALUES (?, ?, ?)",
+                    tm_records,
+                )
+
             conn.commit()
             conn.close()
             
@@ -727,7 +767,8 @@ class SDEManager:
             self._conn = None
 
             update(
-                f"SDE loaded: {count:,} types, {len(mg_records):,} market groups",
+                f"SDE loaded: {count:,} types, {len(mg_records):,} market groups, "
+                f"{len(tm_records):,} material rows",
                 100,
             )
             return True

@@ -31,6 +31,9 @@ SKILL_IDS = {
     # Social skills that modify standings
     "connections": 3359,      # +4% per level to positive NPC standings
     "diplomacy": 3357,        # +4% per level to negative NPC standings
+    # Reprocessing — Scrapmetal Processing gives +2%/level on junk (non-ore)
+    # reprocessing yield. Used by the Reprocess-or-Sell tab.
+    "scrapmetal_processing": 12196,
 }
 
 # Reverse lookup

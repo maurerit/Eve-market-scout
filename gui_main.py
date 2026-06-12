@@ -18,6 +18,14 @@ from gui_tracking import TrackingTabManager
 from gui_crosshub import CrossHubDisplayManager
 from gui_demand_tab import DemandTabManager
 from gui_contracts import ContractsTabManager
+from gui_reprocess import ReprocessTabManager
+
+# Optional local-only module: present on some machines, intentionally not in
+# the repo. When absent, its tab is shown greyed out and nothing else changes.
+try:
+    from drug_gui import DrugTabManager
+except ModuleNotFoundError:
+    DrugTabManager = None
 from gui_stockmarket import StockMarketTab
 from gui_main_controls import MainControlsMixin
 from gui_main_scan import MainScanMixin
@@ -174,6 +182,35 @@ class MarketScoutGUI(MainControlsMixin, MainScanMixin):
             set_status=self._set_status,
             root=self.root,
         )
+
+        # Initialize Reprocess-or-Sell tab. Self-contained: pure-calc engine +
+        # local SDE; reuses tracking_manager's ESISkills/ESIStandings for the
+        # Scrapmetal-level + reprocessing-tax auto-pull, and prices at the
+        # current sell hub.
+        self.reprocess_manager = ReprocessTabManager(
+            self.notebook,
+            get_client=self.get_client,
+            set_status=self._set_status,
+            get_sell_station=lambda: self.sell_station,
+            get_esi_skills=lambda: self.tracking_manager.esi_skills,
+            get_esi_standings=lambda: self.tracking_manager.esi_standings,
+            root=self.root,
+        )
+
+        # Optional local-only Boosters tab. Self-contained (own ESI fetcher,
+        # own config/data files). If the module is missing on this machine,
+        # show a greyed-out disabled placeholder tab instead.
+        if DrugTabManager is not None:
+            self.drug_manager = DrugTabManager(
+                self.notebook,
+                get_client=self.get_client,
+                set_status=self._set_status,
+                root=self.root,
+            )
+        else:
+            self.drug_manager = None
+            placeholder = ttk.Frame(self.notebook)
+            self.notebook.add(placeholder, text="Boosters", state="disabled")
 
         # Connect deals manager to stock market for context menu
         self.deals_manager.stock_market_tab = self.stock_market_tab

@@ -565,6 +565,42 @@ class ContractsDB:
         ).fetchall()
         return [int(r[0]) for r in rows]
 
+    def find_bpc_offers(self, blueprint_type_id: int,
+                        region_id: int) -> list[dict]:
+        """Clean blueprint-copy offers for one blueprint type in a region.
+
+        Returns item-exchange contracts whose ONLY included item is a single
+        BPC of `blueprint_type_id` (no junk bundles, so price == BPC price),
+        not yet expired, cheapest per run first. Each row: {contract_id,
+        price, runs, material_efficiency, time_efficiency,
+        start_location_id, date_expired}.
+        """
+        c = self._conn()
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = c.execute(
+            """
+            SELECT cl.contract_id, cl.price,
+                   COALESCE(ci.runs, 1) AS runs,
+                   ci.material_efficiency, ci.time_efficiency,
+                   cl.start_location_id, cl.date_expired
+            FROM contract_list cl
+            JOIN contract_items ci ON ci.contract_id = cl.contract_id
+            WHERE cl.region_id = ?
+              AND cl.type = 'item_exchange'
+              AND cl.price > 0
+              AND ci.type_id = ?
+              AND ci.is_included = 1
+              AND ci.is_blueprint_copy = 1
+              AND (cl.date_expired IS NULL OR cl.date_expired > ?)
+              AND (SELECT COUNT(*) FROM contract_items ci2
+                   WHERE ci2.contract_id = cl.contract_id
+                     AND ci2.is_included = 1) = 1
+            ORDER BY cl.price / COALESCE(ci.runs, 1)
+            """,
+            (int(region_id), int(blueprint_type_id), now_iso),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     # =========================================================================
     # id -> name cache (issuers / corporations via /universe/names/)
     # =========================================================================
