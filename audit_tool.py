@@ -287,7 +287,13 @@ class AuditTool:
                 log(f"[WARN] Name mismatch: search='{type_name}', SDE='{verified_name}'")
         else:
             log(f"[WARN] Type ID {type_id} not found in SDE")
-        
+
+        # Section 1b: Market Snapshot (actual fulfilled trades, not listings)
+        log("\n" + "-" * 40)
+        log("MARKET SNAPSHOT (actual fulfilled trades)")
+        log("-" * 40)
+        self._run_market_snapshot(type_id, region_id, region_name, log)
+
         # Section 2: Profile Database Check
         log("\n" + "-" * 40)
         log("SECTION 2: PROFILE DATABASE CHECK")
@@ -609,6 +615,50 @@ class AuditTool:
     def _set_status(self, msg: str):
         """Update status bar."""
         self.status_var.set(msg)
+
+    def _run_market_snapshot(self, type_id: int, region_id: int, region_name: str, log):
+        """Show volume-weighted fulfilled-trade price + traded volume per day.
+
+        Reads market *history* (everef/ESI daily aggregates), so the prices are
+        the volume-weighted average of actual transactions each day, NOT current
+        sell-order listings. The selected hub is shown beside Jita as a baseline
+        so a "huge profit at <hub>" claim can be sanity-checked against whether
+        the hub actually moves any volume.
+        """
+        from market_history import get_market_history_db
+        from scanner_common import parse_history_stats
+        from config import JITA_REGION_ID
+
+        market_db = get_market_history_db()
+
+        local_hist = market_db.get_history(region_id, type_id, days=30) or []
+        local = parse_history_stats(local_hist)
+
+        is_jita = (region_id == JITA_REGION_ID)
+        if is_jita:
+            # Selected hub IS Jita — one column is enough.
+            log(f"{'':<18}{region_name:>16}")
+            log("-" * 34)
+            log(f"{'Avg price 7d':<18}{local.avg_price_7d:>12,.2f} ISK")
+            log(f"{'Avg price 30d':<18}{local.avg_price_30d:>12,.2f} ISK")
+            log(f"{'Avg volume 7d':<18}{local.avg_volume_7d:>11,.1f} /day")
+            log(f"{'Avg volume 30d':<18}{local.avg_volume_30d:>11,.1f} /day")
+        else:
+            jita_hist = market_db.get_history(JITA_REGION_ID, type_id, days=30) or []
+            jita = parse_history_stats(jita_hist)
+            log(f"{'':<18}{region_name:>16}{'Jita':>16}")
+            log("-" * 50)
+            log(f"{'Avg price 7d':<18}{local.avg_price_7d:>12,.2f} ISK{jita.avg_price_7d:>12,.2f} ISK")
+            log(f"{'Avg price 30d':<18}{local.avg_price_30d:>12,.2f} ISK{jita.avg_price_30d:>12,.2f} ISK")
+            log(f"{'Avg volume 7d':<18}{local.avg_volume_7d:>11,.1f} /day{jita.avg_volume_7d:>11,.1f} /day")
+            log(f"{'Avg volume 30d':<18}{local.avg_volume_30d:>11,.1f} /day{jita.avg_volume_30d:>11,.1f} /day")
+
+        if local.avg_volume_7d <= 0 and local.avg_volume_30d <= 0:
+            log(f"\n[!] No fulfilled trades recorded in {region_name} over 30 days.")
+            log("    Any 'profit' shown elsewhere for this hub is not backed by real volume.")
+
+        log("\nNote: prices are volume-weighted averages of actual daily fills")
+        log("(market history), NOT current sell-order listings.")
 
     def _run_filter_trace(self):
         """Trace what the scanner pipeline would do with a hypothetical price."""
