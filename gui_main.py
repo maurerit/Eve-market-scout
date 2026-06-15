@@ -21,10 +21,17 @@ from gui_contracts import ContractsTabManager
 from gui_reprocess import ReprocessTabManager
 
 # Optional local-only module: present on some machines, intentionally not in
-# the repo. When absent, its tab is shown greyed out and nothing else changes.
+# the repo. If it can't load for ANY reason its tab is shown greyed out and
+# nothing else changes - the import must never crash startup.
 try:
     from drug_gui import DrugTabManager
 except ModuleNotFoundError:
+    # Expected on public checkouts: module simply isn't there. Grey out quietly.
+    DrugTabManager = None
+except Exception as _opt_err:
+    # Module present but failed to load (e.g. missing data file, bad JSON).
+    # Still grey out, but say why so a broken local build is diagnosable.
+    print(f"[OptionalTab] optional tab present but failed to load, greying out: {_opt_err}")
     DrugTabManager = None
 from gui_stockmarket import StockMarketTab
 from gui_main_controls import MainControlsMixin

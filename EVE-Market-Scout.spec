@@ -4,11 +4,21 @@
 # Build with: pyinstaller EVE-Market-Scout.spec
 #
 # This creates a folder distribution (not single file) for faster startup.
+# Output lands in dist/EVE-Market-Scout/.
+#
+# TWO-BUILD NOTE
+# --------------
+# Some optional tabs are loaded at startup via a try-import and degrade to a
+# disabled placeholder when their files are absent (see the gitignored
+# "Local-only modules" block in .gitignore). PyInstaller bundles whatever is
+# present in the build tree, so:
+#   * Personal build (those local files present): build from this checkout and
+#     the optional tab(s) are included.
+#   * Public/distributable build: build from a fresh `git clone` of the repo so
+#     the gitignored files aren't present, and the bundle ships without them.
+# Nothing in this spec needs to change between the two builds.
 
-import sys
 from PyInstaller.utils.hooks import collect_submodules
-
-block_cipher = None
 
 # Collect all aiohttp submodules (it has many hidden imports)
 aiohttp_hiddenimports = collect_submodules('aiohttp')
@@ -18,8 +28,9 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        # Include sound file if it exists (optional)
-        # ('SELL.WAV', '.'),
+        # No bundled data files: the alert sound (alert.wav), SDE databases, and
+        # market_history.db all live in %APPDATA%/EVEMarketScout/ and are
+        # supplied/downloaded at runtime. The repo .jpg files are docs art only.
     ],
     hiddenimports=[
         # aiohttp and its dependencies
@@ -56,7 +67,7 @@ a = Analysis(
         'pathlib',
         'webbrowser',
         'http.server',
-        # Matplotlib for price history charts
+        # Matplotlib for price history charts (numpy is pulled in automatically)
         'matplotlib',
         'matplotlib.pyplot',
         'matplotlib.backends.backend_tkagg',
@@ -77,13 +88,10 @@ a = Analysis(
         'sphinx',
         'docutils',
     ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure, a.zipped_data)
 
 exe = EXE(
     pyz,
@@ -94,7 +102,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,  # Compress executable (smaller size)
+    upx=True,  # Compress executable (ignored if upx isn't on PATH)
     console=False,  # Set to True if you want to see print() output for debugging
     disable_windowed_traceback=False,
     argv_emulation=False,
