@@ -23,6 +23,7 @@ from tkinter import ttk
 
 from config import AUTO_REFRESH_INTERVAL, get_enabled_hubs, get_hub_config
 from sound_manager import open_data_folder
+from gui_window_utils import fit_window
 
 
 class MainControlsMixin:
@@ -316,7 +317,6 @@ class MainControlsMixin:
         picker.title("Browse Orders — pick structure")
         picker.transient(self.root)
         picker.grab_set()
-        picker.geometry("420x150")
 
         ttk.Label(picker, text="Structure:").pack(anchor=tk.W, padx=10, pady=(10, 2))
         names = [cfg.get("name", str(cfg["station_id"])) for _, cfg in structures]
@@ -340,6 +340,7 @@ class MainControlsMixin:
         ttk.Button(btn_row, text="Cancel", command=picker.destroy).pack(
             side=tk.RIGHT, padx=(0, 6)
         )
+        fit_window(picker, min_width=420)
 
     def _on_add_station(self):
         """Open the Add / Manage Custom Stations dialog."""

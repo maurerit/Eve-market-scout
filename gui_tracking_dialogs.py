@@ -6,6 +6,7 @@ from typing import Callable, Optional
 
 from trade_tracker import TrackedTrade
 from calculate import format_isk, get_skill_summary, calculate_sales_tax, TradingSkills
+from gui_window_utils import fit_window
 
 
 def center_dialog(dialog: tk.Toplevel, width_offset: int = 150, height_offset: int = 100):
@@ -287,10 +288,8 @@ class TradeDetailsDialog:
         self.dialog.title(f"Trade Details: {trade.type_name}")
         self.dialog.transient(parent.winfo_toplevel())
         self.dialog.grab_set()
-        self.dialog.geometry("500x600")
-        
         self._create_widgets()
-        center_dialog(self.dialog, 250, 300)
+        fit_window(self.dialog, min_width=500)
     
     def _create_widgets(self):
         # Header

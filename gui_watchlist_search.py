@@ -26,11 +26,11 @@ class SearchMatchDialog(tk.Toplevel):
         self.search_results = []
 
         self.title(f"Find Match: {original_name[:30]}")
-        self.geometry("400x300")
         self.transient(parent)
         self.grab_set()
 
         self._create_widgets()
+        fit_window(self, min_width=400)
 
     def _create_widgets(self):
         """Create dialog widgets."""

@@ -14,6 +14,7 @@ Both panels call the same dialogs so the help text is centralized.
 import tkinter as tk
 from tkinter import ttk
 from typing import List, Optional
+from gui_window_utils import fit_window
 
 
 # =============================================================================
@@ -207,7 +208,6 @@ def show_indicator_help_dialog(parent: tk.Misc):
     """Show a modal dialog with the general indicator reference."""
     dlg = tk.Toplevel(parent)
     dlg.title("Leading Indicators - Help")
-    dlg.geometry("720x600")
     dlg.transient(parent)
 
     frame = ttk.Frame(dlg)
@@ -243,6 +243,7 @@ def show_indicator_help_dialog(parent: tk.Misc):
     ttk.Button(btn_row, text="Close", command=dlg.destroy).pack(
         side=tk.RIGHT
     )
+    fit_window(dlg, min_width=720)
 
 
 def show_indicator_details_dialog(
@@ -256,7 +257,6 @@ def show_indicator_details_dialog(
     """
     dlg = tk.Toplevel(parent)
     dlg.title(f"Indicator Details: {item_name}")
-    dlg.geometry("520x420")
     dlg.transient(parent)
 
     frame = ttk.Frame(dlg)
@@ -340,3 +340,4 @@ def show_indicator_details_dialog(
     ttk.Button(
         btn_row, text="Close", command=dlg.destroy,
     ).pack(side=tk.RIGHT)
+    fit_window(dlg, min_width=520)

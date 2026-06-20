@@ -9,6 +9,7 @@ from typing import Callable
 
 from gui_watchlist_search import SearchMatchDialog
 from tk_queue import submit
+from gui_window_utils import fit_window
 
 
 class BulkAddDialog(tk.Toplevel):
@@ -22,11 +23,11 @@ class BulkAddDialog(tk.Toplevel):
         self.resolved_items = []  # Successfully matched items
 
         self.title("Bulk Add to Watchlist")
-        self.geometry("600x500")
         self.transient(parent)
         self.grab_set()
 
         self._create_widgets()
+        fit_window(self, min_width=600)
 
         # Pre-fill text area and auto-parse if provided
         if prefill_text:

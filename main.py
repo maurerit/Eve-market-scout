@@ -239,34 +239,29 @@ def _download_sde_with_progress(root: tk.Tk):
     import threading
     import queue
     import time
-    
+
     from sde_manager import get_sde_manager
-    
+    from gui_window_utils import fit_window
+
     msg_queue = queue.Queue()
-    
+
     # Create progress dialog
     dialog = tk.Toplevel(root)
     dialog.title("Downloading Item Database")
-    dialog.geometry("400x100")
-    dialog.resizable(False, False)
     dialog.transient(root)
     dialog.grab_set()
-    
-    dialog.update_idletasks()
-    x = (dialog.winfo_screenwidth() - 400) // 2
-    y = (dialog.winfo_screenheight() - 100) // 2
-    dialog.geometry(f"+{x}+{y}")
-    
+
     frame = ttk.Frame(dialog, padding=20)
     frame.pack(fill=tk.BOTH, expand=True)
-    
+
     status_label = ttk.Label(frame, text="Starting download...")
     status_label.pack()
-    
+
     progress_var = tk.DoubleVar(value=0)
     ttk.Progressbar(
         frame, variable=progress_var, length=350, mode="determinate"
     ).pack(pady=10)
+    fit_window(dialog, min_width=400)
     
     def update_progress(text: str, pct: int):
         """Called from thread - queue only, never touches Tk."""

@@ -16,6 +16,7 @@ from tkinter import ttk, messagebox
 from typing import Callable, Optional
 
 from tk_queue import submit
+from gui_window_utils import fit_window
 
 
 def download_sde_with_progress(
@@ -56,15 +57,8 @@ def download_sde_with_progress(
 
     progress_win = tk.Toplevel(parent)
     progress_win.title("Downloading SDE")
-    progress_win.geometry("350x100")
-    progress_win.resizable(False, False)
     progress_win.transient(parent)
     progress_win.grab_set()
-
-    progress_win.update_idletasks()
-    x = parent.winfo_rootx() + (parent.winfo_width() - 350) // 2
-    y = parent.winfo_rooty() + (parent.winfo_height() - 100) // 2
-    progress_win.geometry(f"+{x}+{y}")
 
     frame = ttk.Frame(progress_win, padding=15)
     frame.pack(fill=tk.BOTH, expand=True)
@@ -77,6 +71,7 @@ def download_sde_with_progress(
         frame, variable=progress_var, length=300, mode="determinate"
     )
     progress_bar.pack()
+    fit_window(progress_win, min_width=350)
 
     def update_progress(msg: str, pct: int):
         submit(lambda: status_label.configure(text=msg))

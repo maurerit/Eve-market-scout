@@ -13,6 +13,7 @@ from tk_queue import submit
 from config import get_hub_config
 from gui_stockmarket_dialogs import AddStockItemDialog
 from gui_stockmarket_settings import StockMarketSettings, StockMarketSettingsDialog
+from gui_window_utils import fit_window
 
 if TYPE_CHECKING:
     from gui_stockmarket_hub import StockMarketHubPanel
@@ -89,26 +90,19 @@ class StockMarketActionsMixin:
         # Show progress dialog
         progress_win = tk.Toplevel(self.frame)
         progress_win.title("Downloading SDE")
-        progress_win.geometry("350x100")
-        progress_win.resizable(False, False)
         progress_win.transient(self.frame)
         progress_win.grab_set()
-        
-        # Center on parent
-        progress_win.update_idletasks()
-        x = self.frame.winfo_rootx() + (self.frame.winfo_width() - 350) // 2
-        y = self.frame.winfo_rooty() + (self.frame.winfo_height() - 100) // 2
-        progress_win.geometry(f"+{x}+{y}")
-        
+
         frame = ttk.Frame(progress_win, padding=15)
         frame.pack(fill=tk.BOTH, expand=True)
-        
+
         status_label = ttk.Label(frame, text="Starting download...")
         status_label.pack(pady=(0, 10))
-        
+
         progress_var = tk.DoubleVar(value=0)
         progress_bar = ttk.Progressbar(frame, variable=progress_var, length=300, mode="determinate")
         progress_bar.pack()
+        fit_window(progress_win, min_width=350)
         
         def update_progress(msg: str, pct: int):
             submit(lambda: status_label.configure(text=msg))

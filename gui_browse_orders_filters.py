@@ -19,6 +19,7 @@ The host class is expected to provide these attributes/methods:
 import tkinter as tk
 from tkinter import ttk
 from typing import Iterable
+from gui_window_utils import fit_window
 
 
 class BrowseOrdersFilterMixin:
@@ -354,8 +355,6 @@ class _CategoryPickerDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Pick a Category")
         self.transient(parent)
-        self.geometry("300x420")
-        self.minsize(240, 320)
         self.grab_set()
 
         self._categories = categories
@@ -389,6 +388,7 @@ class _CategoryPickerDialog(tk.Toplevel):
         ttk.Button(btn_frame, text="Next →", command=self._on_ok).pack(
             side=tk.RIGHT
         )
+        fit_window(self, min_width=300)
 
     def _on_ok(self):
         sel = self.listbox.curselection()
@@ -411,8 +411,6 @@ class _GroupRefinementDialog(tk.Toplevel):
         super().__init__(parent)
         self.title(f"Refine — {category_name}")
         self.transient(parent)
-        self.geometry("340x500")
-        self.minsize(280, 360)
         self.grab_set()
 
         self._groups = groups
@@ -462,6 +460,7 @@ class _GroupRefinementDialog(tk.Toplevel):
         ttk.Button(btn_frame, text="Save", command=self._on_ok).pack(
             side=tk.RIGHT
         )
+        fit_window(self, min_width=340)
 
     def _on_ok(self):
         selected = {

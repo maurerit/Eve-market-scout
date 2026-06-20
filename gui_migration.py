@@ -40,6 +40,7 @@ from daily_update import (
     run_daily_update,
     run_daily_update_background
 )
+from gui_window_utils import fit_window
 
 
 def check_needs_migration(db: MarketHistoryDB) -> bool:
@@ -300,28 +301,21 @@ class FirstLaunchDialog(tk.Toplevel):
         self.choice = None
         
         self.title("EVE Market Scout - First Launch Setup")
-        self.geometry("450x200")
-        self.resizable(False, False)
         print("[Debug] FirstLaunchDialog.__init__: basic setup done")
-        
-        self.update_idletasks()
-        x = (self.winfo_screenwidth() - 450) // 2
-        y = (self.winfo_screenheight() - 200) // 2
-        self.geometry(f"450x200+{x}+{y}")
-        print("[Debug] FirstLaunchDialog.__init__: geometry set")
-        
+
         # Make modal - transient and grab
         self.transient(parent)
         self.grab_set()
-        
+
         # Ensure dialog is visible and on top
         self.deiconify()
         self.lift()
         self.focus_force()
-        
+
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         print("[Debug] FirstLaunchDialog.__init__: calling _build_ui")
         self._build_ui()
+        fit_window(self, min_width=450)
         print("[Debug] FirstLaunchDialog.__init__: complete")
     
     def _build_ui(self):
@@ -401,26 +395,20 @@ class MigrationDialog(tk.Toplevel):
         self._failed_waiting_close = False
         
         self.title("EVE Market Scout - Database Setup")
-        self.geometry("450x180")
-        self.resizable(False, False)
-        
-        self.update_idletasks()
-        x = (self.winfo_screenwidth() - 450) // 2
-        y = (self.winfo_screenheight() - 180) // 2
-        self.geometry(f"450x180+{x}+{y}")
-        
+
         # Make modal
         self.transient(parent)
         self.grab_set()
-        
+
         # Ensure dialog is visible and on top
         self.deiconify()
         self.lift()
         self.focus_force()
-        
+
         self.protocol("WM_DELETE_WINDOW", lambda: None)
-        
+
         self._build_ui()
+        fit_window(self, min_width=450)
     
     def _build_ui(self):
         frame = ttk.Frame(self, padding=20)
@@ -568,26 +556,20 @@ class ScannerSetupDialog(tk.Toplevel):
         self._close_at = None
         
         self.title("EVE Market Scout - Scanner Setup")
-        self.geometry("400x150")
-        self.resizable(False, False)
-        
-        self.update_idletasks()
-        x = (self.winfo_screenwidth() - 400) // 2
-        y = (self.winfo_screenheight() - 150) // 2
-        self.geometry(f"400x150+{x}+{y}")
-        
+
         # Make modal
         self.transient(parent)
         self.grab_set()
-        
+
         # Ensure dialog is visible and on top
         self.deiconify()
         self.lift()
         self.focus_force()
-        
+
         self.protocol("WM_DELETE_WINDOW", lambda: None)
-        
+
         self._build_ui()
+        fit_window(self, min_width=400)
         print(f"[Debug] ScannerSetupDialog created for "
               f"{len(missing_dates)} dates")
     

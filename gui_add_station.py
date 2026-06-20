@@ -19,6 +19,7 @@ from custom_stations import (
     load_custom_stations, remove_custom_station, update_station_in_stockmarket,
 )
 import station_data
+from gui_window_utils import fit_window
 
 
 def _run_async(get_client, coro_fn, callback):
@@ -81,14 +82,12 @@ class AddStationDialog(tk.Toplevel):
         self._selected_station: Optional[dict] = None
 
         self.title("Custom Stations")
-        self.geometry("540x520")
-        self.resizable(True, True)
-        self.minsize(480, 400)
         self.transient(parent)
         self.grab_set()
 
         self._create_widgets()
         self._load_regions()
+        fit_window(self, min_width=540)
 
     # -------------------------------------------------------------------------
     # Layout

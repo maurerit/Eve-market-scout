@@ -9,6 +9,7 @@ from scanner_demand import (
     DEFAULT_MIN_VELOCITY, DEFAULT_MAX_DAYS_OF_STOCK, DEFAULT_HEALTHY_DAYS,
     DEFAULT_MIN_MARGIN_PCT, DEFAULT_SORT_MODE,
 )
+from gui_window_utils import fit_window
 
 
 class DemandSettingsDialog:
@@ -26,23 +27,8 @@ class DemandSettingsDialog:
 
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Demand / Restock Thresholds")
-        self.dialog.geometry("380x270")
-        self.dialog.resizable(False, False)
         self.dialog.transient(parent)
         self.dialog.grab_set()
-
-        # Center on parent
-        self.dialog.update_idletasks()
-        try:
-            px = parent.winfo_rootx()
-            py = parent.winfo_rooty()
-            pw = parent.winfo_width()
-            ph = parent.winfo_height()
-            x = px + (pw - 380) // 2
-            y = py + (ph - 270) // 2
-            self.dialog.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
 
         frame = ttk.Frame(self.dialog, padding=12)
         frame.pack(fill=tk.BOTH, expand=True)
@@ -83,6 +69,7 @@ class DemandSettingsDialog:
         ttk.Button(btn_frame, text="Save", command=self._save).pack(side=tk.RIGHT, padx=(0, 6))
 
         frame.columnconfigure(1, weight=1)
+        fit_window(self.dialog, min_width=380)
 
     def _row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, tooltip: str):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)

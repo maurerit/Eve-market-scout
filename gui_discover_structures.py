@@ -20,6 +20,7 @@ from esi_structures import (
     discover_accessible_structures, resolve_region_for_system,
     StructureAccessError,
 )
+from gui_window_utils import fit_window
 
 
 class DiscoverStructuresDialog(tk.Toplevel):
@@ -33,11 +34,10 @@ class DiscoverStructuresDialog(tk.Toplevel):
         self.on_station_added = on_station_added
 
         self.title("Find Player Structures")
-        self.geometry("640x420")
-        self.minsize(520, 320)
         self.transient(parent)
 
         self._create_widgets()
+        fit_window(self, min_width=640)
 
     def _create_widgets(self):
         top = ttk.Frame(self, padding=10)

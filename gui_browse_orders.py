@@ -24,6 +24,7 @@ from tk_queue import submit
 from esi_auth import ESIAuth
 from esi_structures import fetch_structure_orders, StructureAccessError
 from gui_browse_orders_filters import BrowseOrdersFilterMixin
+from gui_window_utils import fit_window
 
 
 _KIND_LABELS = {
@@ -45,14 +46,13 @@ class BrowseStructureOrdersDialog(BrowseOrdersFilterMixin, tk.Toplevel):
         self._type_names: dict[int, str] = {}
 
         self.title(f"Browse Orders — {structure_name}")
-        self.geometry("960x720")
-        self.minsize(780, 520)
         self.transient(parent)
 
         # Owned by BrowseOrdersFilterMixin: chips, taxonomy, available cats/groups.
         self._init_filter_state()
 
         self._build()
+        fit_window(self, min_width=960)
         self._kick_fetch()
 
     # ------------------------------------------------------------------ build

@@ -16,6 +16,7 @@ from tkinter import ttk
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from tk_queue import submit
+from gui_window_utils import fit_window
 
 # Try to import matplotlib
 try:
@@ -97,8 +98,6 @@ def _show_help_dialog(parent: tk.Widget):
     """Show the price-vs-volume help popup."""
     win = tk.Toplevel(parent)
     win.title("Price and Volume - How to Read")
-    win.geometry("440x420")
-    win.resizable(False, False)
     win.transient(parent)
 
     frame = ttk.Frame(win, padding=12)
@@ -115,6 +114,7 @@ def _show_help_dialog(parent: tk.Widget):
 
     btn = ttk.Button(frame, text="Close", command=win.destroy)
     btn.pack(pady=(8, 0))
+    fit_window(win, min_width=440)
 
 
 class PriceGraphDialog:
@@ -147,8 +147,6 @@ class PriceGraphDialog:
         """Show the dialog and load data."""
         self.popup = tk.Toplevel(self.parent)
         self.popup.title(f"Price History: {self.type_name}")
-        self.popup.geometry("950x680")
-        self.popup.resizable(True, True)
         
         # Main frame
         main_frame = ttk.Frame(self.popup)
@@ -199,7 +197,8 @@ class PriceGraphDialog:
             self.notebook.add(frame, text=label)
             self.panels[label] = GraphPanel(frame, label)
             self.panels[label].show_loading()
-        
+        fit_window(self.popup, min_width=950)
+
         # Load data in background
         import threading
         thread = threading.Thread(target=self._load_data, daemon=True)

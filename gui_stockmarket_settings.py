@@ -14,6 +14,7 @@ from tkinter import ttk, messagebox, filedialog
 
 from sound_manager import get_data_dir
 from tk_queue import submit
+from gui_window_utils import fit_window
 
 
 # Settings file location
@@ -131,8 +132,6 @@ class StockMarketSettingsDialog(tk.Toplevel):
         """
         super().__init__(parent)
         self.title("Stock Market Settings")
-        self.geometry("480x650")
-        self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
         
@@ -140,8 +139,9 @@ class StockMarketSettingsDialog(tk.Toplevel):
         self.on_save = on_save
         self.original_buy_pct = settings.buy_percentile
         self.original_sell_pct = settings.sell_percentile
-        
+
         self._create_widgets()
+        fit_window(self, min_width=480)
     
     def _create_widgets(self):
         """Create dialog widgets."""

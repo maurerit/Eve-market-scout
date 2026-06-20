@@ -8,6 +8,7 @@ from typing import Callable, TYPE_CHECKING
 
 from config import TRADE_HUBS, get_hub_config, DEFAULT_HUB
 from tk_queue import submit
+from gui_window_utils import fit_window
 
 if TYPE_CHECKING:
     from gui_stockmarket_holdings_data import HoldingsManager
@@ -40,11 +41,11 @@ class AddStockItemDialog(tk.Toplevel):
         self.station_id = get_hub_config(DEFAULT_HUB)["station_id"]
         
         self.title("Add to Stock Holdings")
-        self.geometry("450x400")
         self.transient(parent)
         self.grab_set()
-        
+
         self._create_widgets()
+        fit_window(self, min_width=450)
     
     def _create_widgets(self):
         """Create dialog widgets."""
@@ -220,13 +221,13 @@ class ArchiveDownloadDialog(tk.Toplevel):
         self._importing = False
         
         self.title("Archive Manager")
-        self.geometry("500x400")
         self.transient(parent)
         self.grab_set()
-        
+
         self._create_widgets()
         self._update_status()
         self._update_import_status()
+        fit_window(self, min_width=500)
     
     def _create_widgets(self):
         """Create dialog widgets."""

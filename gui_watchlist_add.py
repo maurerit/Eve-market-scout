@@ -9,6 +9,7 @@ from typing import Callable, Optional, TYPE_CHECKING
 from config import DEFAULT_HUB, get_hub_config
 from tk_queue import submit
 from gui_watchlist_calc_mixin import MaxBuyCalcMixin
+from gui_window_utils import fit_window
 
 if TYPE_CHECKING:
     from gui_watchlist_dialogs import WatchlistItem
@@ -41,12 +42,12 @@ class AddItemDialog(MaxBuyCalcMixin, tk.Toplevel):
         self.get_esi_standings = get_esi_standings
 
         self.title("Add to Watchlist")
-        self.geometry("500x705" if show_max_buy_calc else "500x505")
         self.transient(parent)
         self.grab_set()
 
         self._create_widgets()
-        
+        fit_window(self, min_width=500)
+
         # Pre-fill if provided (coming from deals context menu)
         if prefill:
             self.selected_item = {"type_id": prefill.type_id, "name": prefill.name}
