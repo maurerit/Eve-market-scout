@@ -30,47 +30,68 @@ class MainControlsMixin:
     """Mixin providing control bar creation and toggle handlers."""
 
     def _create_control_bar(self):
-        """Create top control bar with buttons and status."""
-        control_frame = ttk.Frame(self.root, padding=10)
-        control_frame.pack(fill=tk.X)
+        """Create top control bar with buttons and status (two rows)."""
+        outer = ttk.Frame(self.root, padding=(10, 5, 10, 0))
+        outer.pack(fill=tk.X)
+
+        # ── ROW 1: station selectors, scan/jita, toggles, status ──────────────
+        row1 = ttk.Frame(outer)
+        row1.pack(fill=tk.X)
+
+        # Right-side items must be packed first so pack(LEFT) doesn't crowd them.
+
+        # === Character Display (right) ===
+        char_frame = ttk.Frame(row1)
+        char_frame.pack(side=tk.RIGHT, padx=(10, 0))
+
+        self.seller_label = ttk.Label(
+            char_frame, text="Seller: -", font=("Segoe UI", 8), foreground="darkgreen"
+        )
+        self.seller_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.buyer_label = ttk.Label(
+            char_frame, text="Buyer: -", font=("Segoe UI", 8), foreground="darkblue"
+        )
+        self.buyer_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        # Status label (right)
+        self.status_label = ttk.Label(row1, text="Ready", font=("Segoe UI", 9))
+        self.status_label.pack(side=tk.RIGHT)
 
         # === Station Selection (Buy / Sell) ===
-        station_frame = ttk.Frame(control_frame)
+        station_frame = ttk.Frame(row1)
         station_frame.pack(side=tk.LEFT)
-        
-        # Buy Station dropdown
+
         ttk.Label(station_frame, text="Buy:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 2))
-        
+
         hub_choices = get_enabled_hubs()
         hub_display_names = [name for key, name in hub_choices]
         self.hub_keys = [key for key, name in hub_choices]
-        
+
         self.buy_station_var = tk.StringVar()
         self.buy_station_dropdown = ttk.Combobox(
             station_frame,
             textvariable=self.buy_station_var,
             values=hub_display_names,
             state="readonly",
-            width=10
+            width=10,
         )
-        # Set initial value
         for key, name in hub_choices:
             if key == self.buy_station:
                 self.buy_station_var.set(name)
                 break
         self.buy_station_dropdown.pack(side=tk.LEFT, padx=(0, 5))
         self.buy_station_dropdown.bind("<<ComboboxSelected>>", self._on_buy_station_changed)
-        
-        # Sell Station dropdown
+
         ttk.Label(station_frame, text="Sell:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(5, 2))
-        
+
         self.sell_station_var = tk.StringVar()
         self.sell_station_dropdown = ttk.Combobox(
             station_frame,
             textvariable=self.sell_station_var,
             values=hub_display_names,
             state="readonly",
-            width=10
+            width=10,
         )
         for key, name in hub_choices:
             if key == self.sell_station:
@@ -78,60 +99,48 @@ class MainControlsMixin:
                 break
         self.sell_station_dropdown.pack(side=tk.LEFT, padx=(0, 10))
         self.sell_station_dropdown.bind("<<ComboboxSelected>>", self._on_sell_station_changed)
-        
-        # Mode indicator
+
         self.mode_label = ttk.Label(
-            station_frame,
-            text="[Same Station]",
-            font=("Segoe UI", 8),
-            foreground="gray"
+            station_frame, text="[Same Station]", font=("Segoe UI", 8), foreground="gray"
         )
         self.mode_label.pack(side=tk.LEFT, padx=(0, 10))
 
-        # Scan button
-        self.scan_btn = ttk.Button(
-            control_frame,
-            text="Scan Market",
-            command=self._start_scan
-        )
+        # Scan / Jita buttons
+        self.scan_btn = ttk.Button(row1, text="Scan Market", command=self._start_scan)
         self.scan_btn.pack(side=tk.LEFT, padx=5)
 
-        # Jita Refresh button
-        self.jita_btn = ttk.Button(
-            control_frame,
-            text="Refresh Jita",
-            command=self._refresh_jita
-        )
+        self.jita_btn = ttk.Button(row1, text="Refresh Jita", command=self._refresh_jita)
         self.jita_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Jita cache status label
+
         self.jita_status_label = ttk.Label(
-            control_frame,
-            text="Jita: No cache",
-            font=("Segoe UI", 9),
-            foreground="gray"
+            row1, text="Jita: No cache", font=("Segoe UI", 9), foreground="gray"
         )
         self.jita_status_label.pack(side=tk.LEFT, padx=5)
 
-        # Auto-refresh toggle
+        # Toggles
         self.auto_refresh_var = tk.BooleanVar(value=self.auto_refresh_enabled)
         self.auto_refresh_cb = ttk.Checkbutton(
-            control_frame,
-            text="Auto-refresh",
-            variable=self.auto_refresh_var,
-            command=self._toggle_auto_refresh
+            row1, text="Auto-refresh",
+            variable=self.auto_refresh_var, command=self._toggle_auto_refresh
         )
         self.auto_refresh_cb.pack(side=tk.LEFT, padx=10)
 
-        # Sound toggle
         self.sound_var = tk.BooleanVar(value=self.sound_enabled)
         self.sound_cb = ttk.Checkbutton(
-            control_frame,
-            text="Sound alerts",
-            variable=self.sound_var,
-            command=self._toggle_sound
+            row1, text="Sound alerts",
+            variable=self.sound_var, command=self._toggle_sound
         )
         self.sound_cb.pack(side=tk.LEFT, padx=5)
+
+        # Countdown
+        self.countdown_label = ttk.Label(
+            row1, text="", font=("Segoe UI", 9), foreground="gray"
+        )
+        self.countdown_label.pack(side=tk.LEFT, padx=10)
+
+        # ── ROW 2: utility buttons ─────────────────────────────────────────────
+        row2 = ttk.Frame(outer)
+        row2.pack(fill=tk.X, pady=(2, 4))
 
         # Stock Market master on/off switch. Lives here (not on the SM tab's
         # own toolbar) because that toolbar is covered by the cold-start lock
@@ -140,86 +149,30 @@ class MainControlsMixin:
         # once stock_market_tab exists (it's created after the control bar).
         self.sm_master_var = tk.BooleanVar(value=True)
         self.sm_master_cb = ttk.Checkbutton(
-            control_frame,
-            text="Stock Market",
-            variable=self.sm_master_var,
-            command=self._toggle_stock_market_master
+            row2, text="Stock Market",
+            variable=self.sm_master_var, command=self._toggle_stock_market_master
         )
-        self.sm_master_cb.pack(side=tk.LEFT, padx=5)
+        self.sm_master_cb.pack(side=tk.LEFT, padx=(0, 10))
 
-        # Open Data Folder button
         self.data_folder_btn = ttk.Button(
-            control_frame,
-            text="Data Folder",
-            command=self._open_data_folder,
-            width=10
+            row2, text="Data Folder", command=self._open_data_folder, width=10
         )
         self.data_folder_btn.pack(side=tk.LEFT, padx=5)
 
-        # Countdown label
-        self.countdown_label = ttk.Label(
-            control_frame,
-            text="",
-            font=("Segoe UI", 9),
-            foreground="gray"
-        )
-        self.countdown_label.pack(side=tk.LEFT, padx=10)
-
-        # Add Station button
         self.add_station_btn = ttk.Button(
-            control_frame,
-            text="Add Station",
-            command=self._on_add_station,
-            width=11,
+            row2, text="Add Station", command=self._on_add_station, width=11
         )
         self.add_station_btn.pack(side=tk.LEFT, padx=5)
 
-        # Find Player Structures button
         self.find_structures_btn = ttk.Button(
-            control_frame,
-            text="Find Structures",
-            command=self._on_find_structures,
-            width=14,
+            row2, text="Find Structures", command=self._on_find_structures, width=14
         )
         self.find_structures_btn.pack(side=tk.LEFT, padx=5)
 
-        # Browse raw structure orders (dev/debug)
         self.browse_orders_btn = ttk.Button(
-            control_frame,
-            text="Browse Orders",
-            command=self._on_browse_orders,
-            width=13,
+            row2, text="Browse Orders", command=self._on_browse_orders, width=13
         )
         self.browse_orders_btn.pack(side=tk.LEFT, padx=5)
-
-        # Status label
-        self.status_label = ttk.Label(
-            control_frame,
-            text="Ready",
-            font=("Segoe UI", 9)
-        )
-        self.status_label.pack(side=tk.RIGHT)
-        
-        # === Character Display Frame (right side) ===
-        char_frame = ttk.Frame(control_frame)
-        char_frame.pack(side=tk.RIGHT, padx=(10, 0))
-        
-        # Character labels
-        self.seller_label = ttk.Label(
-            char_frame,
-            text="Seller: -",
-            font=("Segoe UI", 8),
-            foreground="darkgreen"
-        )
-        self.seller_label.pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.buyer_label = ttk.Label(
-            char_frame,
-            text="Buyer: -",
-            font=("Segoe UI", 8),
-            foreground="darkblue"
-        )
-        self.buyer_label.pack(side=tk.LEFT, padx=(0, 5))
 
     # =========================================================================
     # TOGGLE HANDLERS

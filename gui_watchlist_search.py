@@ -7,7 +7,7 @@ import threading
 from typing import Callable, TYPE_CHECKING
 from tk_queue import submit
 from gui_watchlist_calc_mixin import MaxBuyCalcMixin
-from gui_window_utils import fit_window
+from gui_window_utils import fit_window, make_scrollable
 
 if TYPE_CHECKING:
     from gui_watchlist_dialogs import WatchlistItem
@@ -34,10 +34,20 @@ class SearchMatchDialog(tk.Toplevel):
 
     def _create_widgets(self):
         """Create dialog widgets."""
-        ttk.Label(self, text=f"Original: {self.original_name}", font=("Segoe UI", 9, "bold")).pack(pady=5)
+        # Buttons pinned to window bottom (outside scroll area)
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        ttk.Button(btn_frame, text="Select", command=self._on_confirm).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Scrollable content area above the buttons.
+        inner = make_scrollable(self)
+
+        ttk.Label(inner, text=f"Original: {self.original_name}", font=("Segoe UI", 9, "bold")).pack(pady=5)
 
         # Search
-        search_frame = ttk.Frame(self)
+        search_frame = ttk.Frame(inner)
         search_frame.pack(fill=tk.X, padx=10, pady=5)
 
         self.search_var = tk.StringVar(value=self.original_name)
@@ -45,9 +55,9 @@ class SearchMatchDialog(tk.Toplevel):
         ttk.Button(search_frame, text="Search", command=self._do_search).pack(side=tk.LEFT, padx=5)
 
         # Results
-        ttk.Label(self, text="Select correct item:").pack(anchor=tk.W, padx=10)
+        ttk.Label(inner, text="Select correct item:").pack(anchor=tk.W, padx=10)
 
-        self.listbox = tk.Listbox(self, height=8)
+        self.listbox = tk.Listbox(inner, height=8)
         self.listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         self.listbox.bind("<<ListboxSelect>>", self._on_select)
 
@@ -56,13 +66,6 @@ class SearchMatchDialog(tk.Toplevel):
             self.search_results = self.suggestions
             for item in self.suggestions:
                 self.listbox.insert(tk.END, item["name"])
-
-        # Buttons
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        ttk.Button(btn_frame, text="Select", command=self._on_confirm).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
 
     def _do_search(self):
         """Search ESI for item."""
@@ -169,15 +172,25 @@ class EditItemDialog(MaxBuyCalcMixin, tk.Toplevel):
 
     def _create_widgets(self):
         """Create dialog widgets."""
+        # Buttons pinned to window bottom (outside scroll area)
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        ttk.Button(btn_frame, text="Save", command=self._on_save).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Scrollable content area above the buttons.
+        inner = make_scrollable(self)
+
         # Item name (read-only)
-        ttk.Label(self, text=f"Item: {self.item.name}", font=("Segoe UI", 10, "bold")).pack(pady=10)
+        ttk.Label(inner, text=f"Item: {self.item.name}", font=("Segoe UI", 10, "bold")).pack(pady=10)
 
         # --- Max Buy Price Calculator section (provided by MaxBuyCalcMixin) ---
         # No-op when show_max_buy_calc is False (i.e. personal watchlist edits).
-        self._build_max_buy_calc_section()
+        self._build_max_buy_calc_section(parent=inner)
 
         # Conditions
-        cond_frame = ttk.LabelFrame(self, text="Alert Conditions", padding=10)
+        cond_frame = ttk.LabelFrame(inner, text="Alert Conditions", padding=10)
         cond_frame.pack(fill=tk.X, padx=10, pady=5)
 
         # Price under
@@ -210,13 +223,6 @@ class EditItemDialog(MaxBuyCalcMixin, tk.Toplevel):
         ttk.Label(row4, text="Notes:", width=20).pack(side=tk.LEFT)
         self.notes_var = tk.StringVar(value=self.item.notes)
         ttk.Entry(row4, textvariable=self.notes_var, width=30).pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        # Buttons
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        ttk.Button(btn_frame, text="Save", command=self._on_save).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
 
     def _on_save(self):
         """Save changes."""

@@ -19,6 +19,7 @@ then read the cache and paint the grid. All diagnostics carry `[ContractDiag]`.
 
 import tkinter as tk
 from tkinter import ttk
+from gui_window_utils import fit_window
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
@@ -707,6 +708,7 @@ class ContractsTabManager:
         btns.pack(fill=tk.X)
         ttk.Button(btns, text="Watch", command=_ok).pack(side=tk.RIGHT, padx=4)
         ttk.Button(btns, text="Cancel", command=_cancel).pack(side=tk.RIGHT)
+        fit_window(dlg, min_width=320)
         dlg.wait_window()
         return result["value"]
 

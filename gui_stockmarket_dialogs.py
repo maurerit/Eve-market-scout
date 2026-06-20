@@ -8,7 +8,7 @@ from typing import Callable, TYPE_CHECKING
 
 from config import TRADE_HUBS, get_hub_config, DEFAULT_HUB
 from tk_queue import submit
-from gui_window_utils import fit_window
+from gui_window_utils import fit_window, make_scrollable
 
 if TYPE_CHECKING:
     from gui_stockmarket_holdings_data import HoldingsManager
@@ -49,45 +49,55 @@ class AddStockItemDialog(tk.Toplevel):
     
     def _create_widgets(self):
         """Create dialog widgets."""
+        # Buttons pinned to window bottom (outside scroll area)
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        ttk.Button(btn_frame, text="Add", command=self._on_add).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Scrollable content area above the buttons.
+        inner = make_scrollable(self)
+
         # Search section
-        search_frame = ttk.LabelFrame(self, text="Search for Item", padding=10)
+        search_frame = ttk.LabelFrame(inner, text="Search for Item", padding=10)
         search_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         ttk.Label(search_frame, text="Item Name:").pack(anchor=tk.W)
-        
+
         search_row = ttk.Frame(search_frame)
         search_row.pack(fill=tk.X, pady=5)
-        
+
         self.search_var = tk.StringVar()
         self.search_entry = ttk.Entry(search_row, textvariable=self.search_var, width=30)
         self.search_entry.pack(side=tk.LEFT, padx=(0, 5))
         self.search_entry.bind("<Return>", lambda e: self._do_search())
-        
+
         ttk.Button(search_row, text="Search", command=self._do_search).pack(side=tk.LEFT)
-        
+
         # Results
         ttk.Label(search_frame, text="Results:").pack(anchor=tk.W, pady=(10, 0))
-        
+
         results_frame = ttk.Frame(search_frame)
         results_frame.pack(fill=tk.BOTH, expand=True)
-        
+
         self.results_listbox = tk.Listbox(results_frame, height=6)
         self.results_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
         scrollbar = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.results_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.results_listbox.configure(yscrollcommand=scrollbar.set)
-        
+
         self.results_listbox.bind("<<ListboxSelect>>", self._on_select)
-        
+
         # Selected item
         self.selected_label = ttk.Label(search_frame, text="Selected: None", font=("Segoe UI", 9, "bold"))
         self.selected_label.pack(anchor=tk.W, pady=(10, 0))
-        
+
         # Station selection
-        station_frame = ttk.LabelFrame(self, text="Trading Station", padding=10)
+        station_frame = ttk.LabelFrame(inner, text="Trading Station", padding=10)
         station_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         self.station_var = tk.StringVar(value=DEFAULT_HUB)
         for hub_key, config in TRADE_HUBS.items():
             if config.get("enabled"):
@@ -98,13 +108,6 @@ class AddStockItemDialog(tk.Toplevel):
                     value=hub_key,
                     command=self._on_station_change
                 ).pack(side=tk.LEFT, padx=5)
-        
-        # Buttons
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, padx=10, pady=10)
-        
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Add", command=self._on_add).pack(side=tk.RIGHT)
     
     def _do_search(self):
         """Search for items."""
@@ -231,10 +234,26 @@ class ArchiveDownloadDialog(tk.Toplevel):
     
     def _create_widgets(self):
         """Create dialog widgets."""
+        # Buttons pinned to window bottom (outside scroll area)
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        self.download_btn = ttk.Button(btn_frame, text="Download All", command=self._start_download)
+        self.download_btn.pack(side=tk.LEFT, padx=5)
+        self.pause_btn = ttk.Button(btn_frame, text="Pause", command=self._toggle_pause, state=tk.DISABLED)
+        self.pause_btn.pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Locate Existing", command=self._locate_existing).pack(side=tk.LEFT, padx=5)
+        self.import_btn = ttk.Button(btn_frame, text="Import to DB", command=self._start_import)
+        self.import_btn.pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Close", command=self._on_close).pack(side=tk.RIGHT)
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Scrollable content area above the buttons.
+        inner = make_scrollable(self)
+
         # Status section
-        status_frame = ttk.LabelFrame(self, text="Archive Status", padding=10)
+        status_frame = ttk.LabelFrame(inner, text="Archive Status", padding=10)
         status_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         self.status_tree = ttk.Treeview(
             status_frame,
             columns=("year", "downloaded", "expected", "percent"),
@@ -245,56 +264,39 @@ class ArchiveDownloadDialog(tk.Toplevel):
         self.status_tree.heading("downloaded", text="Downloaded")
         self.status_tree.heading("expected", text="Expected")
         self.status_tree.heading("percent", text="Complete")
-        
+
         self.status_tree.column("year", width=80)
         self.status_tree.column("downloaded", width=100)
         self.status_tree.column("expected", width=100)
         self.status_tree.column("percent", width=80)
-        
+
         self.status_tree.pack(fill=tk.X)
-        
+
         # Progress section
-        progress_frame = ttk.LabelFrame(self, text="Download Progress", padding=10)
+        progress_frame = ttk.LabelFrame(inner, text="Download Progress", padding=10)
         progress_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         self.progress_label = ttk.Label(progress_frame, text="Ready to download")
         self.progress_label.pack(anchor=tk.W)
-        
+
         self.progress_bar = ttk.Progressbar(progress_frame, mode="determinate")
         self.progress_bar.pack(fill=tk.X, pady=5)
-        
+
         self.bytes_label = ttk.Label(progress_frame, text="")
         self.bytes_label.pack(anchor=tk.W)
-        
+
         # Import section
-        import_frame = ttk.LabelFrame(self, text="Database Import", padding=10)
+        import_frame = ttk.LabelFrame(inner, text="Database Import", padding=10)
         import_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         self.import_status_label = ttk.Label(import_frame, text="Checking database status...")
         self.import_status_label.pack(anchor=tk.W)
-        
+
         self.import_progress = ttk.Progressbar(import_frame, mode="determinate")
         self.import_progress.pack(fill=tk.X, pady=5)
-        
+
         self.import_count_label = ttk.Label(import_frame, text="")
         self.import_count_label.pack(anchor=tk.W)
-        
-        # Buttons
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, padx=10, pady=10)
-        
-        self.download_btn = ttk.Button(btn_frame, text="Download All", command=self._start_download)
-        self.download_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.pause_btn = ttk.Button(btn_frame, text="Pause", command=self._toggle_pause, state=tk.DISABLED)
-        self.pause_btn.pack(side=tk.LEFT, padx=5)
-        
-        ttk.Button(btn_frame, text="Locate Existing", command=self._locate_existing).pack(side=tk.LEFT, padx=5)
-        
-        self.import_btn = ttk.Button(btn_frame, text="Import to DB", command=self._start_import)
-        self.import_btn.pack(side=tk.LEFT, padx=5)
-        
-        ttk.Button(btn_frame, text="Close", command=self._on_close).pack(side=tk.RIGHT)
     
     def _update_import_status(self):
         """Update import status display."""

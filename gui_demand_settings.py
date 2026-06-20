@@ -9,7 +9,7 @@ from scanner_demand import (
     DEFAULT_MIN_VELOCITY, DEFAULT_MAX_DAYS_OF_STOCK, DEFAULT_HEALTHY_DAYS,
     DEFAULT_MIN_MARGIN_PCT, DEFAULT_SORT_MODE,
 )
-from gui_window_utils import fit_window
+from gui_window_utils import fit_window, make_scrollable
 
 
 class DemandSettingsDialog:
@@ -30,7 +30,18 @@ class DemandSettingsDialog:
         self.dialog.transient(parent)
         self.dialog.grab_set()
 
-        frame = ttk.Frame(self.dialog, padding=12)
+        # Buttons pinned to window bottom (outside scroll area)
+        btn_frame = ttk.Frame(self.dialog)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        ttk.Button(btn_frame, text="Reset to defaults", command=self._reset_defaults).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Save", command=self._save).pack(side=tk.RIGHT, padx=(0, 6))
+        ttk.Button(btn_frame, text="Cancel", command=self.dialog.destroy).pack(side=tk.RIGHT)
+        ttk.Separator(self.dialog, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Scrollable content area above the buttons.
+        inner = make_scrollable(self.dialog)
+
+        frame = ttk.Frame(inner, padding=12)
         frame.pack(fill=tk.BOTH, expand=True)
 
         self.min_vel_var = tk.StringVar(value=str(current.get("min_velocity", DEFAULT_MIN_VELOCITY)))
@@ -58,15 +69,6 @@ class DemandSettingsDialog:
             width=18,
         )
         sort_combo.grid(row=4, column=1, sticky="w", pady=(8, 0))
-
-        # Buttons
-        btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=5, column=0, columnspan=2, pady=(14, 0), sticky="ew")
-        btn_frame.columnconfigure(0, weight=1)
-
-        ttk.Button(btn_frame, text="Reset to defaults", command=self._reset_defaults).pack(side=tk.LEFT)
-        ttk.Button(btn_frame, text="Cancel", command=self.dialog.destroy).pack(side=tk.RIGHT)
-        ttk.Button(btn_frame, text="Save", command=self._save).pack(side=tk.RIGHT, padx=(0, 6))
 
         frame.columnconfigure(1, weight=1)
         fit_window(self.dialog, min_width=380)

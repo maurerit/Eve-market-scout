@@ -86,8 +86,10 @@ class MarketScoutGUI(MainControlsMixin, MainScanMixin):
         # Show and configure the root window
         self.root.deiconify()  # Make visible (was withdrawn)
         self._update_window_title()
-        self.root.geometry("1550x700")
-        self.root.minsize(1300, 500)
+        screen_w = self.root.winfo_screenwidth()
+        win_w = min(1550, screen_w - 20)
+        self.root.geometry(f"{win_w}x760")
+        self.root.minsize(1100, 550)
 
         self._setup_styles()
         

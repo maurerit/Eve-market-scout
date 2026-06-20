@@ -5,15 +5,7 @@ from tkinter import ttk, messagebox
 from typing import Callable, Optional
 
 from calculate import format_isk
-
-
-def center_dialog(dialog: tk.Toplevel, width: int = 300, height: int = 200):
-    """Center a dialog over its parent window."""
-    dialog.update_idletasks()
-    parent = dialog.master.winfo_toplevel()
-    x = parent.winfo_x() + (parent.winfo_width() // 2) - (width // 2)
-    y = parent.winfo_y() + (parent.winfo_height() // 2) - (height // 2)
-    dialog.geometry(f"{width}x{height}+{x}+{y}")
+from gui_window_utils import fit_window
 
 
 def parse_float(value: str, default: float = 0.0) -> float:
@@ -63,10 +55,8 @@ class RecordPurchaseDialog:
         self.dialog.title(f"Record Purchase: {type_name}")
         self.dialog.transient(parent.winfo_toplevel())
         self.dialog.grab_set()
-        self.dialog.resizable(False, False)
-        
         self._create_widgets()
-        center_dialog(self.dialog, 320, 220)
+        fit_window(self.dialog, min_width=320)
     
     def _create_widgets(self):
         frame = ttk.Frame(self.dialog, padding=15)
@@ -177,10 +167,8 @@ class RecordSaleDialog:
         self.dialog.title(f"Record Sale: {type_name}")
         self.dialog.transient(parent.winfo_toplevel())
         self.dialog.grab_set()
-        self.dialog.resizable(False, False)
-        
         self._create_widgets()
-        center_dialog(self.dialog, 320, 240)
+        fit_window(self.dialog, min_width=320)
     
     def _create_widgets(self):
         frame = ttk.Frame(self.dialog, padding=15)
@@ -295,10 +283,8 @@ class HoldingDetailsDialog:
         self.dialog.title(f"Holding Details: {type_name}")
         self.dialog.transient(parent.winfo_toplevel())
         self.dialog.grab_set()
-        self.dialog.resizable(False, False)
-        
         self._create_widgets()
-        center_dialog(self.dialog, 350, 320)
+        fit_window(self.dialog, min_width=350)
     
     def _create_widgets(self):
         frame = ttk.Frame(self.dialog, padding=15)

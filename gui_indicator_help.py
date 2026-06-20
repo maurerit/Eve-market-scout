@@ -14,7 +14,7 @@ Both panels call the same dialogs so the help text is centralized.
 import tkinter as tk
 from tkinter import ttk
 from typing import List, Optional
-from gui_window_utils import fit_window
+from gui_window_utils import fit_window, make_scrollable
 
 
 # =============================================================================
@@ -259,7 +259,22 @@ def show_indicator_details_dialog(
     dlg.title(f"Indicator Details: {item_name}")
     dlg.transient(parent)
 
-    frame = ttk.Frame(dlg)
+    # Buttons pinned to window bottom (outside scroll area)
+    btn_row = ttk.Frame(dlg)
+    btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=14, pady=(8, 12))
+    ttk.Button(
+        btn_row, text="Indicator Help",
+        command=lambda: show_indicator_help_dialog(dlg),
+    ).pack(side=tk.LEFT)
+    ttk.Button(
+        btn_row, text="Close", command=dlg.destroy,
+    ).pack(side=tk.RIGHT)
+    ttk.Separator(dlg, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+
+    # Scrollable content area above the buttons.
+    inner = make_scrollable(dlg)
+
+    frame = ttk.Frame(inner)
     frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
 
     ttk.Label(
@@ -276,9 +291,7 @@ def show_indicator_details_dialog(
                   "has not yet run for this hub."),
             justify="left",
         ).pack(anchor="w")
-        ttk.Button(
-            frame, text="Close", command=dlg.destroy
-        ).pack(side=tk.BOTTOM, pady=(12, 0))
+        fit_window(dlg, min_width=520)
         return
 
     # Section: underlying labels
@@ -330,14 +343,4 @@ def show_indicator_details_dialog(
                 font=("Consolas", 10),
             ).pack(anchor="w")
 
-    # Buttons
-    btn_row = ttk.Frame(frame)
-    btn_row.pack(fill=tk.X, pady=(12, 0), side=tk.BOTTOM)
-    ttk.Button(
-        btn_row, text="Indicator Help",
-        command=lambda: show_indicator_help_dialog(dlg),
-    ).pack(side=tk.LEFT)
-    ttk.Button(
-        btn_row, text="Close", command=dlg.destroy,
-    ).pack(side=tk.RIGHT)
     fit_window(dlg, min_width=520)

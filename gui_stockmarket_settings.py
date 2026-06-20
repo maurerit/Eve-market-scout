@@ -14,7 +14,7 @@ from tkinter import ttk, messagebox, filedialog
 
 from sound_manager import get_data_dir
 from tk_queue import submit
-from gui_window_utils import fit_window
+from gui_window_utils import fit_window, make_scrollable
 
 
 # Settings file location
@@ -145,41 +145,52 @@ class StockMarketSettingsDialog(tk.Toplevel):
     
     def _create_widgets(self):
         """Create dialog widgets."""
+        # Buttons pinned to window bottom (outside scroll area)
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        ttk.Button(btn_frame, text="Reset Defaults", command=self._reset_defaults).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Save", command=self._on_save).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Scrollable content area above the buttons.
+        inner = make_scrollable(self)
+
         # Archive section
-        archive_frame = ttk.LabelFrame(self, text="Archive Location", padding=10)
+        archive_frame = ttk.LabelFrame(inner, text="Archive Location", padding=10)
         archive_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         ttk.Label(
             archive_frame,
             text="Location of everef history archive files.",
             font=("Segoe UI", 8),
             foreground="gray"
         ).pack(anchor=tk.W)
-        
+
         path_row = ttk.Frame(archive_frame)
         path_row.pack(fill=tk.X, pady=5)
-        
+
         self.archive_var = tk.StringVar(value=self.settings.archive_path or "(Default: Roaming folder)")
         self.archive_entry = ttk.Entry(path_row, textvariable=self.archive_var, width=45)
         self.archive_entry.pack(side=tk.LEFT, padx=(0, 5))
-        
+
         ttk.Button(path_row, text="Browse", command=self._browse_archive).pack(side=tk.LEFT)
         ttk.Button(path_row, text="Reset", command=self._reset_archive).pack(side=tk.LEFT, padx=5)
-        
+
         # Material Data section (for material cost analysis)
-        material_frame = ttk.LabelFrame(self, text="Material Data (Blueprint Analysis)", padding=10)
+        material_frame = ttk.LabelFrame(inner, text="Material Data (Blueprint Analysis)", padding=10)
         material_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         ttk.Label(
             material_frame,
             text="Blueprint/material data for cost analysis. Download once, update after patches.",
             font=("Segoe UI", 8),
             foreground="gray"
         ).pack(anchor=tk.W)
-        
+
         material_row = ttk.Frame(material_frame)
         material_row.pack(fill=tk.X, pady=5)
-        
+
         self.btn_update_materials = ttk.Button(
             material_row,
             text="Update Material Data",
@@ -187,7 +198,7 @@ class StockMarketSettingsDialog(tk.Toplevel):
             width=20
         )
         self.btn_update_materials.pack(side=tk.LEFT, padx=(0, 10))
-        
+
         self.material_status_var = tk.StringVar(value="")
         self.material_status_label = ttk.Label(
             material_row,
@@ -195,7 +206,7 @@ class StockMarketSettingsDialog(tk.Toplevel):
             font=("Segoe UI", 8)
         )
         self.material_status_label.pack(side=tk.LEFT)
-        
+
         # Material progress bar (hidden by default)
         self.material_progress_var = tk.DoubleVar(value=0)
         self.material_progress = ttk.Progressbar(
@@ -203,68 +214,68 @@ class StockMarketSettingsDialog(tk.Toplevel):
             variable=self.material_progress_var,
             maximum=100
         )
-        
+
         # Initialize material status
         self._update_material_status()
-        
+
         # Percentiles section (requires rebuild)
-        pct_frame = ttk.LabelFrame(self, text="Percentiles (Requires Rebuild)", padding=10)
+        pct_frame = ttk.LabelFrame(inner, text="Percentiles (Requires Rebuild)", padding=10)
         pct_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         ttk.Label(
             pct_frame,
             text="Changing these requires rebuilding profiles from archive data.",
             font=("Segoe UI", 8),
             foreground="#CC6600"
         ).pack(anchor=tk.W)
-        
+
         pct_grid = ttk.Frame(pct_frame)
         pct_grid.pack(fill=tk.X, pady=5)
-        
+
         # Buy percentile
         ttk.Label(pct_grid, text="Buy Percentile:").grid(row=0, column=0, sticky=tk.W, pady=3)
         self.buy_pct_var = tk.StringVar(value=str(self.settings.buy_percentile))
         buy_spin = ttk.Spinbox(pct_grid, from_=5, to=45, width=8, textvariable=self.buy_pct_var)
         buy_spin.grid(row=0, column=1, padx=10, pady=3)
         ttk.Label(pct_grid, text="(5-45, default 15)", foreground="gray").grid(row=0, column=2, sticky=tk.W)
-        
+
         # Sell percentile
         ttk.Label(pct_grid, text="Sell Percentile:").grid(row=1, column=0, sticky=tk.W, pady=3)
         self.sell_pct_var = tk.StringVar(value=str(self.settings.sell_percentile))
         sell_spin = ttk.Spinbox(pct_grid, from_=55, to=95, width=8, textvariable=self.sell_pct_var)
         sell_spin.grid(row=1, column=1, padx=10, pady=3)
         ttk.Label(pct_grid, text="(55-95, default 90)", foreground="gray").grid(row=1, column=2, sticky=tk.W)
-        
+
         # Offsets section (no rebuild)
-        offset_frame = ttk.LabelFrame(self, text="Target Offsets", padding=10)
+        offset_frame = ttk.LabelFrame(inner, text="Target Offsets", padding=10)
         offset_frame.pack(fill=tk.X, padx=10, pady=5)
-        
+
         ttk.Label(
             offset_frame,
             text="Adjust buy/sell targets relative to calculated percentiles.",
             font=("Segoe UI", 8),
             foreground="gray"
         ).pack(anchor=tk.W)
-        
+
         offset_grid = ttk.Frame(offset_frame)
         offset_grid.pack(fill=tk.X, pady=5)
-        
+
         # Floor offset
         ttk.Label(offset_grid, text="Floor Offset %:").grid(row=0, column=0, sticky=tk.W, pady=3)
         self.floor_var = tk.StringVar(value=str(self.settings.floor_offset_pct))
         floor_spin = ttk.Spinbox(offset_grid, from_=-20, to=20, increment=0.5, width=8, textvariable=self.floor_var)
         floor_spin.grid(row=0, column=1, padx=10, pady=3)
         ttk.Label(offset_grid, text="(+ = above floor, - = below)", foreground="gray").grid(row=0, column=2, sticky=tk.W)
-        
+
         # Peak offset
         ttk.Label(offset_grid, text="Peak Offset %:").grid(row=1, column=0, sticky=tk.W, pady=3)
         self.peak_var = tk.StringVar(value=str(self.settings.peak_offset_pct))
         peak_spin = ttk.Spinbox(offset_grid, from_=-20, to=20, increment=0.5, width=8, textvariable=self.peak_var)
         peak_spin.grid(row=1, column=1, padx=10, pady=3)
         ttk.Label(offset_grid, text="(+ = above peak, - = below)", foreground="gray").grid(row=1, column=2, sticky=tk.W)
-        
+
         # Volume filter (compute-time gate)
-        volume_frame = ttk.LabelFrame(self, text="Volume Filter (Requires Rescan)", padding=10)
+        volume_frame = ttk.LabelFrame(inner, text="Volume Filter (Requires Rescan)", padding=10)
         volume_frame.pack(fill=tk.X, padx=10, pady=5)
 
         ttk.Label(
@@ -288,7 +299,7 @@ class StockMarketSettingsDialog(tk.Toplevel):
                   foreground="gray").grid(row=0, column=2, sticky=tk.W)
 
         # Filters note
-        filter_note = ttk.LabelFrame(self, text="Filtering", padding=10)
+        filter_note = ttk.LabelFrame(inner, text="Filtering", padding=10)
         filter_note.pack(fill=tk.X, padx=10, pady=5)
 
         ttk.Label(
@@ -297,34 +308,26 @@ class StockMarketSettingsDialog(tk.Toplevel):
             font=("Segoe UI", 8),
             foreground="gray"
         ).pack(anchor=tk.W)
-        
+
         # Legend
         legend_frame = ttk.Frame(filter_note)
         legend_frame.pack(fill=tk.X, pady=(10, 0))
-        
+
         ttk.Label(legend_frame, text="Row colors: ", font=("Segoe UI", 8)).pack(side=tk.LEFT)
-        
+
         # Red indicator
         red_lbl = tk.Label(legend_frame, text=" Down ", bg="#DC143C", fg="white", font=("Segoe UI", 8))
         red_lbl.pack(side=tk.LEFT, padx=2)
-        
+
         # Yellow indicator
         yellow_lbl = tk.Label(legend_frame, text=" Up ", bg="#FFD700", fg="black", font=("Segoe UI", 8))
         yellow_lbl.pack(side=tk.LEFT, padx=2)
-        
+
         # Green indicator
         green_lbl = tk.Label(legend_frame, text=" Stable ", bg="#228B22", fg="white", font=("Segoe UI", 8))
         green_lbl.pack(side=tk.LEFT, padx=2)
-        
+
         ttk.Label(legend_frame, text="  |  Signal col: B=Buy, S=Sell", font=("Segoe UI", 8)).pack(side=tk.LEFT)
-        
-        # Buttons
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, padx=10, pady=10)
-        
-        ttk.Button(btn_frame, text="Reset Defaults", command=self._reset_defaults).pack(side=tk.LEFT)
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Save", command=self._on_save).pack(side=tk.RIGHT)
     
     def _browse_archive(self):
         """Browse for archive folder."""

@@ -19,7 +19,7 @@ The host class is expected to provide these attributes/methods:
 import tkinter as tk
 from tkinter import ttk
 from typing import Iterable
-from gui_window_utils import fit_window
+from gui_window_utils import fit_window, make_scrollable
 
 
 class BrowseOrdersFilterMixin:
@@ -360,11 +360,21 @@ class _CategoryPickerDialog(tk.Toplevel):
         self._categories = categories
         self._on_pick = on_pick
 
-        ttk.Label(self, text="Pick a category to filter by:").pack(
+        # Buttons pinned to window bottom (outside scroll area)
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        ttk.Button(btn_frame, text="Next →", command=self._on_ok).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Scrollable content area above the buttons.
+        inner = make_scrollable(self)
+
+        ttk.Label(inner, text="Pick a category to filter by:").pack(
             anchor=tk.W, padx=10, pady=(10, 4)
         )
 
-        list_frame = ttk.Frame(self)
+        list_frame = ttk.Frame(inner)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
 
         self.listbox = tk.Listbox(
@@ -380,14 +390,6 @@ class _CategoryPickerDialog(tk.Toplevel):
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.listbox.bind("<Double-Button-1>", lambda _e: self._on_ok())
 
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
-            side=tk.RIGHT, padx=(4, 0)
-        )
-        ttk.Button(btn_frame, text="Next →", command=self._on_ok).pack(
-            side=tk.RIGHT
-        )
         fit_window(self, min_width=300)
 
     def _on_ok(self):
@@ -416,14 +418,24 @@ class _GroupRefinementDialog(tk.Toplevel):
         self._groups = groups
         self._on_save = on_save
 
+        # Buttons pinned to window bottom (outside scroll area)
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        ttk.Button(btn_frame, text="Save", command=self._on_ok).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Scrollable content area above the buttons.
+        inner = make_scrollable(self)
+
         ttk.Label(
-            self,
-            text=f"Select groups within “{category_name}”\n"
-                 "(leave all unchecked to include the entire category):",
+            inner,
+            text=f'Select groups within “{category_name}”\n'
+                 '(leave all unchecked to include the entire category):',
             justify=tk.LEFT,
         ).pack(anchor=tk.W, padx=10, pady=(10, 4))
 
-        list_frame = ttk.Frame(self)
+        list_frame = ttk.Frame(inner)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 4))
 
         self.listbox = tk.Listbox(
@@ -441,7 +453,7 @@ class _GroupRefinementDialog(tk.Toplevel):
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        toggle_frame = ttk.Frame(self)
+        toggle_frame = ttk.Frame(inner)
         toggle_frame.pack(fill=tk.X, padx=10, pady=(0, 4))
         ttk.Button(
             toggle_frame, text="Select All",
@@ -452,14 +464,6 @@ class _GroupRefinementDialog(tk.Toplevel):
             command=lambda: self.listbox.selection_clear(0, tk.END),
         ).pack(side=tk.LEFT, padx=4)
 
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
-            side=tk.RIGHT, padx=(4, 0)
-        )
-        ttk.Button(btn_frame, text="Save", command=self._on_ok).pack(
-            side=tk.RIGHT
-        )
         fit_window(self, min_width=340)
 
     def _on_ok(self):

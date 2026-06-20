@@ -9,14 +9,6 @@ from calculate import format_isk, get_skill_summary, calculate_sales_tax, Tradin
 from gui_window_utils import fit_window
 
 
-def center_dialog(dialog: tk.Toplevel, width_offset: int = 150, height_offset: int = 100):
-    """Center a dialog over its parent window."""
-    dialog.update_idletasks()
-    parent = dialog.master.winfo_toplevel()
-    x = parent.winfo_x() + (parent.winfo_width() // 2) - width_offset
-    y = parent.winfo_y() + (parent.winfo_height() // 2) - height_offset
-    dialog.geometry(f"+{x}+{y}")
-
 
 def parse_float(value: str, default: float = 0.0) -> float:
     """Parse a string to float, handling commas."""
@@ -48,12 +40,12 @@ class RecordBuyDialog:
         self.dialog.grab_set()
         
         self._create_widgets()
-        center_dialog(self.dialog)
-    
+        fit_window(self.dialog, min_width=350)
+
     def _create_widgets(self):
-        ttk.Label(self.dialog, text=self.trade.type_name, 
+        ttk.Label(self.dialog, text=self.trade.type_name,
                   font=("Segoe UI", 11, "bold")).pack(pady=10)
-        
+
         # Price
         price_frame = ttk.Frame(self.dialog)
         price_frame.pack(fill=tk.X, padx=20, pady=5)
@@ -114,12 +106,12 @@ class RecordListingDialog:
         self.dialog.grab_set()
         
         self._create_widgets()
-        center_dialog(self.dialog)
-    
+        fit_window(self.dialog, min_width=350)
+
     def _create_widgets(self):
-        ttk.Label(self.dialog, text=self.trade.type_name, 
+        ttk.Label(self.dialog, text=self.trade.type_name,
                   font=("Segoe UI", 11, "bold")).pack(pady=10)
-        
+
         # Show buy info
         info_text = f"Bought: {self.trade.quantity:,} @ {format_isk(self.trade.buy_price)}"
         ttk.Label(self.dialog, text=info_text).pack(pady=5)
@@ -184,12 +176,12 @@ class RecordRelistDialog:
         self.dialog.grab_set()
         
         self._create_widgets()
-        center_dialog(self.dialog)
-    
+        fit_window(self.dialog, min_width=320)
+
     def _create_widgets(self):
-        ttk.Label(self.dialog, text=self.trade.type_name, 
+        ttk.Label(self.dialog, text=self.trade.type_name,
                   font=("Segoe UI", 11, "bold")).pack(pady=10)
-        
+
         # Show current listing
         info_text = f"Currently listed: {self.trade.listed_quantity:,} @ {format_isk(self.trade.list_price)}"
         ttk.Label(self.dialog, text=info_text).pack(pady=5)
@@ -234,12 +226,12 @@ class RecordSaleDialog:
         self.dialog.grab_set()
         
         self._create_widgets()
-        center_dialog(self.dialog)
-    
+        fit_window(self.dialog, min_width=350)
+
     def _create_widgets(self):
-        ttk.Label(self.dialog, text=self.trade.type_name, 
+        ttk.Label(self.dialog, text=self.trade.type_name,
                   font=("Segoe UI", 11, "bold")).pack(pady=10)
-        
+
         # Show listing info
         info_text = f"Listed: {self.trade.listed_quantity:,} @ {format_isk(self.trade.list_price)}"
         ttk.Label(self.dialog, text=info_text).pack(pady=5)

@@ -9,7 +9,7 @@ from typing import Callable
 
 from gui_watchlist_search import SearchMatchDialog
 from tk_queue import submit
-from gui_window_utils import fit_window
+from gui_window_utils import fit_window, make_scrollable
 
 
 class BulkAddDialog(tk.Toplevel):
@@ -37,15 +37,25 @@ class BulkAddDialog(tk.Toplevel):
 
     def _create_widgets(self):
         """Create dialog widgets."""
+        # Buttons pinned to window bottom (outside scroll area)
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        ttk.Button(btn_frame, text="Add Matched Items", command=self._on_add).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Scrollable content area above the buttons.
+        inner = make_scrollable(self)
+
         # Instructions
         ttk.Label(
-            self,
+            inner,
             text="Paste item list (EVE fitting format, market export, or one item per line):",
             font=("Segoe UI", 9)
         ).pack(anchor=tk.W, padx=10, pady=(10, 5))
 
         # Text area for pasting
-        text_frame = ttk.Frame(self)
+        text_frame = ttk.Frame(inner)
         text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         self.text_area = tk.Text(text_frame, height=10, wrap=tk.NONE)
@@ -56,17 +66,17 @@ class BulkAddDialog(tk.Toplevel):
         self.text_area.configure(yscrollcommand=text_sb.set)
 
         # Parse button
-        btn_row = ttk.Frame(self)
+        btn_row = ttk.Frame(inner)
         btn_row.pack(fill=tk.X, padx=10, pady=5)
-        
+
         ttk.Button(btn_row, text="Parse & Match Items", command=self._parse_and_match).pack(side=tk.LEFT)
         self.status_label = ttk.Label(btn_row, text="", font=("Segoe UI", 9))
         self.status_label.pack(side=tk.LEFT, padx=10)
 
         # Results treeview
-        ttk.Label(self, text="Parsed Items:", font=("Segoe UI", 9, "bold")).pack(anchor=tk.W, padx=10, pady=(10, 2))
+        ttk.Label(inner, text="Parsed Items:", font=("Segoe UI", 9, "bold")).pack(anchor=tk.W, padx=10, pady=(10, 2))
 
-        results_frame = ttk.Frame(self)
+        results_frame = ttk.Frame(inner)
         results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         columns = ("name", "status", "action")
@@ -74,13 +84,13 @@ class BulkAddDialog(tk.Toplevel):
         self.results_tree.heading("name", text="Item Name")
         self.results_tree.heading("status", text="Status")
         self.results_tree.heading("action", text="Action")
-        
+
         self.results_tree.column("name", width=250)
         self.results_tree.column("status", width=150)
         self.results_tree.column("action", width=100)
 
         self.results_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
         results_sb = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.results_tree.yview)
         results_sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.results_tree.configure(yscrollcommand=results_sb.set)
@@ -94,16 +104,9 @@ class BulkAddDialog(tk.Toplevel):
         self.result_menu = tk.Menu(self, tearoff=0)
         self.result_menu.add_command(label="Search for match...", command=self._search_for_match)
         self.result_menu.add_command(label="Remove from list", command=self._remove_from_list)
-        
+
         self.results_tree.bind("<Button-3>", self._show_result_menu)
         self.results_tree.bind("<Double-1>", lambda e: self._search_for_match())
-
-        # Bottom buttons
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        ttk.Button(btn_frame, text="Add Matched Items", command=self._on_add).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
 
     def _parse_text(self, text: str) -> list[str]:
         """Parse pasted text into item names."""

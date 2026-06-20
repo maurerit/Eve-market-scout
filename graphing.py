@@ -197,7 +197,13 @@ class PriceGraphDialog:
             self.notebook.add(frame, text=label)
             self.panels[label] = GraphPanel(frame, label)
             self.panels[label].show_loading()
-        fit_window(self.popup, min_width=950)
+        screen_w = self.popup.winfo_screenwidth()
+        screen_h = self.popup.winfo_screenheight()
+        w = min(1050, int(screen_w * 0.78))
+        h = int(screen_h * 0.72)
+        self.popup.geometry(f"{w}x{h}")
+        self.popup.minsize(700, 400)
+        self.popup.resizable(True, True)
 
         # Load data in background
         import threading
