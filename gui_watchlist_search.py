@@ -7,6 +7,7 @@ import threading
 from typing import Callable, TYPE_CHECKING
 from tk_queue import submit
 from gui_watchlist_calc_mixin import MaxBuyCalcMixin
+from gui_window_utils import fit_window
 
 if TYPE_CHECKING:
     from gui_watchlist_dialogs import WatchlistItem
@@ -157,12 +158,14 @@ class EditItemDialog(MaxBuyCalcMixin, tk.Toplevel):
         self.get_esi_standings = get_esi_standings
 
         self.title(f"Edit: {item.name}")
-        # Wider + taller when calc section is shown
-        self.geometry("500x520" if show_max_buy_calc else "400x250")
         self.transient(parent)
         self.grab_set()
 
         self._create_widgets()
+        # Size to content + clamp to screen + resizable, instead of a hardcoded
+        # geometry tuned to Windows fonts (which clipped the buttons on Linux).
+        # Keep the old widths as a floor; let the height auto-fit.
+        fit_window(self, min_width=500 if show_max_buy_calc else 400)
 
     def _create_widgets(self):
         """Create dialog widgets."""
