@@ -83,11 +83,11 @@ class AddStationDialog(tk.Toplevel):
 
         self.title("Custom Stations")
         self.transient(parent)
-        self.grab_set()
 
         self._create_widgets()
         self._load_regions()
         fit_window(self, min_width=540)
+        self.grab_set()
 
     # -------------------------------------------------------------------------
     # Layout

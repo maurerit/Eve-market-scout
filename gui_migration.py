@@ -303,11 +303,11 @@ class FirstLaunchDialog(tk.Toplevel):
         self.title("EVE Market Scout - First Launch Setup")
         print("[Debug] FirstLaunchDialog.__init__: basic setup done")
 
-        # Make modal - transient and grab
-        self.transient(parent)
-        self.grab_set()
-
-        # Ensure dialog is visible and on top
+        # Only attach as transient when the parent is actually visible.
+        # On Linux, transient() with a withdrawn/hidden parent can make the
+        # dialog invisible or un-focusable on some window managers.
+        if parent.winfo_viewable():
+            self.transient(parent)
         self.deiconify()
         self.lift()
         self.focus_force()
@@ -316,6 +316,7 @@ class FirstLaunchDialog(tk.Toplevel):
         print("[Debug] FirstLaunchDialog.__init__: calling _build_ui")
         self._build_ui()
         fit_window(self, min_width=450)
+        self.grab_set()
         print("[Debug] FirstLaunchDialog.__init__: complete")
     
     def _build_ui(self):
@@ -396,11 +397,7 @@ class MigrationDialog(tk.Toplevel):
         
         self.title("EVE Market Scout - Database Setup")
 
-        # Make modal
         self.transient(parent)
-        self.grab_set()
-
-        # Ensure dialog is visible and on top
         self.deiconify()
         self.lift()
         self.focus_force()
@@ -409,6 +406,7 @@ class MigrationDialog(tk.Toplevel):
 
         self._build_ui()
         fit_window(self, min_width=450)
+        self.grab_set()
     
     def _build_ui(self):
         frame = ttk.Frame(self, padding=20)
@@ -557,11 +555,7 @@ class ScannerSetupDialog(tk.Toplevel):
         
         self.title("EVE Market Scout - Scanner Setup")
 
-        # Make modal
         self.transient(parent)
-        self.grab_set()
-
-        # Ensure dialog is visible and on top
         self.deiconify()
         self.lift()
         self.focus_force()
@@ -570,6 +564,7 @@ class ScannerSetupDialog(tk.Toplevel):
 
         self._build_ui()
         fit_window(self, min_width=400)
+        self.grab_set()
         print(f"[Debug] ScannerSetupDialog created for "
               f"{len(missing_dates)} dates")
     

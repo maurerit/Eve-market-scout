@@ -133,8 +133,7 @@ class StockMarketSettingsDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Stock Market Settings")
         self.transient(parent)
-        self.grab_set()
-        
+
         self.settings = settings
         self.on_save = on_save
         self.original_buy_pct = settings.buy_percentile
@@ -142,6 +141,7 @@ class StockMarketSettingsDialog(tk.Toplevel):
 
         self._create_widgets()
         fit_window(self, min_width=480)
+        self.grab_set()
     
     def _create_widgets(self):
         """Create dialog widgets."""

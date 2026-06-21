@@ -24,10 +24,10 @@ class BulkAddDialog(tk.Toplevel):
 
         self.title("Bulk Add to Watchlist")
         self.transient(parent)
-        self.grab_set()
 
         self._create_widgets()
         fit_window(self, min_width=600)
+        self.grab_set()
 
         # Pre-fill text area and auto-parse if provided
         if prefill_text:

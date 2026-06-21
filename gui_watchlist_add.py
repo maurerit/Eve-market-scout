@@ -43,10 +43,10 @@ class AddItemDialog(MaxBuyCalcMixin, tk.Toplevel):
 
         self.title("Add to Watchlist")
         self.transient(parent)
-        self.grab_set()
 
         self._create_widgets()
         fit_window(self, min_width=500)
+        self.grab_set()
 
         # Pre-fill if provided (coming from deals context menu)
         if prefill:

@@ -37,10 +37,10 @@ class RecordBuyDialog:
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(f"Record Buy: {trade.type_name}")
         self.dialog.transient(parent.winfo_toplevel())
-        self.dialog.grab_set()
-        
+
         self._create_widgets()
         fit_window(self.dialog, min_width=350)
+        self.dialog.grab_set()
 
     def _create_widgets(self):
         ttk.Label(self.dialog, text=self.trade.type_name,
@@ -103,10 +103,10 @@ class RecordListingDialog:
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(f"List for Sale: {trade.type_name}")
         self.dialog.transient(parent.winfo_toplevel())
-        self.dialog.grab_set()
-        
+
         self._create_widgets()
         fit_window(self.dialog, min_width=350)
+        self.dialog.grab_set()
 
     def _create_widgets(self):
         ttk.Label(self.dialog, text=self.trade.type_name,
@@ -173,10 +173,10 @@ class RecordRelistDialog:
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(f"Relist: {trade.type_name}")
         self.dialog.transient(parent.winfo_toplevel())
-        self.dialog.grab_set()
-        
+
         self._create_widgets()
         fit_window(self.dialog, min_width=320)
+        self.dialog.grab_set()
 
     def _create_widgets(self):
         ttk.Label(self.dialog, text=self.trade.type_name,
@@ -223,10 +223,10 @@ class RecordSaleDialog:
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(f"Record Sale: {trade.type_name}")
         self.dialog.transient(parent.winfo_toplevel())
-        self.dialog.grab_set()
-        
+
         self._create_widgets()
         fit_window(self.dialog, min_width=350)
+        self.dialog.grab_set()
 
     def _create_widgets(self):
         ttk.Label(self.dialog, text=self.trade.type_name,
@@ -279,9 +279,10 @@ class TradeDetailsDialog:
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(f"Trade Details: {trade.type_name}")
         self.dialog.transient(parent.winfo_toplevel())
-        self.dialog.grab_set()
+
         self._create_widgets()
         fit_window(self.dialog, min_width=500)
+        self.dialog.grab_set()
     
     def _create_widgets(self):
         # Header

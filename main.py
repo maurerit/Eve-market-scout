@@ -190,7 +190,10 @@ def _check_sde_on_startup(root: tk.Tk):
         sde = get_sde_manager()
         
         if not sde.is_available():
-            # No SDE database - prompt to download
+            # No SDE database - prompt to download.
+            # Don't pass parent=root: root is withdrawn at this point, and on
+            # Linux a messagebox parented to a hidden window can appear
+            # invisible or behind other windows.
             result = messagebox.askyesno(
                 "Download Item Database",
                 "EVE Market Scout can download a local item database for faster scanning.\n\n"
@@ -199,23 +202,21 @@ def _check_sde_on_startup(root: tk.Tk):
                 "Download now? (About 5MB, takes ~30 seconds)\n\n"
                 "You can skip this and download later from Data Folder menu.",
                 icon="question",
-                parent=root
             )
-            
+
             if result:
                 _download_sde_with_progress(root)
-        
+
         elif sde.is_stale():
             # SDE exists but is old
             age = sde.get_age_days()
-            
+
             result = messagebox.askyesno(
                 "Update Item Database",
                 f"Your item database is {age} days old.\n\n"
                 "Would you like to update it now?\n\n"
                 "(New items from recent patches may be missing)",
                 icon="question",
-                parent=root
             )
             
             if result:
@@ -249,7 +250,6 @@ def _download_sde_with_progress(root: tk.Tk):
     dialog = tk.Toplevel(root)
     dialog.title("Downloading Item Database")
     dialog.transient(root)
-    dialog.grab_set()
 
     frame = ttk.Frame(dialog, padding=20)
     frame.pack(fill=tk.BOTH, expand=True)
@@ -262,6 +262,7 @@ def _download_sde_with_progress(root: tk.Tk):
         frame, variable=progress_var, length=350, mode="determinate"
     ).pack(pady=10)
     fit_window(dialog, min_width=400)
+    dialog.grab_set()
     
     def update_progress(text: str, pct: int):
         """Called from thread - queue only, never touches Tk."""
@@ -504,18 +505,46 @@ def main():
     print("[Startup] EVE Market Scout initializing...")
     
     # ==========================================================================
-    # SIGINT GUARD - Suppress during startup to prevent spurious console
-    # events from crashing widget construction. Restored before mainloop.
+    # SIGINT GUARD - Suppress only during Tk root creation to avoid spurious
+    # console events racing widget construction. Restored immediately after so
+    # Ctrl+C works during any startup dialogs that wait for user input.
     # ==========================================================================
     import signal
     _original_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    
+
     # ==========================================================================
     # SINGLE TK ROOT - Created FIRST, before any threads or dialogs
     # ==========================================================================
     root = tk.Tk()
     root.withdraw()  # Hide until main GUI is ready
+
+    # Restore SIGINT now that the root is stable. Startup dialogs (SDE check,
+    # first-launch migration) block on user input and must be Ctrl+C-able.
+    signal.signal(signal.SIGINT, _original_sigint)
+
+    # ==========================================================================
+    # LINUX CTRL+C FIX
+    # Tkinter's event loop (mainloop / wait_window) is C code — Python signal
+    # handlers never execute while it's blocked.  Two-part fix:
+    #   1. Override SIGINT with a handler that calls os._exit() directly,
+    #      bypassing the Python layer entirely.
+    #   2. Register a recurring after() callback (every 200 ms) so the event
+    #      loop regularly yields back to Python, giving the OS a chance to
+    #      deliver the signal between C-level epoll/select calls.
+    # Windows doesn't need this — its Tk build polls signals natively.
+    # ==========================================================================
+    if sys.platform != "win32":
+        import os as _os
+        def _ctrl_c_handler(_sig, _frame):
+            print("\n[Shutdown] Ctrl+C — force-exiting")
+            logging.info("Ctrl+C received, force-exiting (Linux signal fix)")
+            _os._exit(130)  # 130 = killed by SIGINT by convention
+        signal.signal(signal.SIGINT, _ctrl_c_handler)
+
+        def _signal_wakeup():
+            root.after(200, _signal_wakeup)
+        root.after(200, _signal_wakeup)
     
     # Ensure data directory exists BEFORE any threads can race on it
     from sound_manager import get_data_dir
@@ -573,10 +602,6 @@ def main():
     # Start daily update AFTER GUI init to avoid thread interference
     # during widget construction
     run_daily_update_background(db)
-    
-    # Restore SIGINT handling now that startup is complete and mainloop
-    # is about to run. User can Ctrl+C normally from here on.
-    signal.signal(signal.SIGINT, _original_sigint)
     
     gui.run()
     

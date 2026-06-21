@@ -42,10 +42,10 @@ class AddStockItemDialog(tk.Toplevel):
         
         self.title("Add to Stock Holdings")
         self.transient(parent)
-        self.grab_set()
 
         self._create_widgets()
         fit_window(self, min_width=450)
+        self.grab_set()
     
     def _create_widgets(self):
         """Create dialog widgets."""
@@ -225,12 +225,12 @@ class ArchiveDownloadDialog(tk.Toplevel):
         
         self.title("Archive Manager")
         self.transient(parent)
-        self.grab_set()
 
         self._create_widgets()
         self._update_status()
         self._update_import_status()
         fit_window(self, min_width=500)
+        self.grab_set()
     
     def _create_widgets(self):
         """Create dialog widgets."""

@@ -27,27 +27,17 @@ class SearchMatchDialog(tk.Toplevel):
 
         self.title(f"Find Match: {original_name[:30]}")
         self.transient(parent)
-        self.grab_set()
 
         self._create_widgets()
         fit_window(self, min_width=400)
+        self.grab_set()
 
     def _create_widgets(self):
         """Create dialog widgets."""
-        # Buttons pinned to window bottom (outside scroll area)
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
-        ttk.Button(btn_frame, text="Select", command=self._on_confirm).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
-        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
-
-        # Scrollable content area above the buttons.
-        inner = make_scrollable(self)
-
-        ttk.Label(inner, text=f"Original: {self.original_name}", font=("Segoe UI", 9, "bold")).pack(pady=5)
+        ttk.Label(self, text=f"Original: {self.original_name}", font=("Segoe UI", 9, "bold")).pack(pady=5)
 
         # Search
-        search_frame = ttk.Frame(inner)
+        search_frame = ttk.Frame(self)
         search_frame.pack(fill=tk.X, padx=10, pady=5)
 
         self.search_var = tk.StringVar(value=self.original_name)
@@ -55,9 +45,9 @@ class SearchMatchDialog(tk.Toplevel):
         ttk.Button(search_frame, text="Search", command=self._do_search).pack(side=tk.LEFT, padx=5)
 
         # Results
-        ttk.Label(inner, text="Select correct item:").pack(anchor=tk.W, padx=10)
+        ttk.Label(self, text="Select correct item:").pack(anchor=tk.W, padx=10)
 
-        self.listbox = tk.Listbox(inner, height=8)
+        self.listbox = tk.Listbox(self, height=8)
         self.listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         self.listbox.bind("<<ListboxSelect>>", self._on_select)
 
@@ -66,6 +56,12 @@ class SearchMatchDialog(tk.Toplevel):
             self.search_results = self.suggestions
             for item in self.suggestions:
                 self.listbox.insert(tk.END, item["name"])
+
+        # Buttons
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        ttk.Button(btn_frame, text="Select", command=self._on_confirm).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
 
     def _do_search(self):
         """Search ESI for item."""
@@ -162,35 +158,34 @@ class EditItemDialog(MaxBuyCalcMixin, tk.Toplevel):
 
         self.title(f"Edit: {item.name}")
         self.transient(parent)
-        self.grab_set()
 
         self._create_widgets()
-        # Size to content + clamp to screen + resizable, instead of a hardcoded
-        # geometry tuned to Windows fonts (which clipped the buttons on Linux).
-        # Keep the old widths as a floor; let the height auto-fit.
         fit_window(self, min_width=500 if show_max_buy_calc else 400)
+        self.grab_set()
 
     def _create_widgets(self):
         """Create dialog widgets."""
-        # Buttons pinned to window bottom (outside scroll area)
+        # Buttons always pinned to the window bottom so they survive screen-height
+        # clamping. The NPC Orders flow (show_max_buy_calc=True) adds a scrollable
+        # canvas above them; the plain watchlist edit packs directly into self.
         btn_frame = ttk.Frame(self)
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
         ttk.Button(btn_frame, text="Save", command=self._on_save).pack(side=tk.RIGHT, padx=5)
         ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
         ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
 
-        # Scrollable content area above the buttons.
-        inner = make_scrollable(self)
+        # Use a scrollable canvas for the tall NPC Orders flow; plain packing for
+        # the small personal-watchlist edit that doesn't need it.
+        parent = make_scrollable(self) if self.show_max_buy_calc else self
 
         # Item name (read-only)
-        ttk.Label(inner, text=f"Item: {self.item.name}", font=("Segoe UI", 10, "bold")).pack(pady=10)
+        ttk.Label(parent, text=f"Item: {self.item.name}", font=("Segoe UI", 10, "bold")).pack(pady=10)
 
         # --- Max Buy Price Calculator section (provided by MaxBuyCalcMixin) ---
-        # No-op when show_max_buy_calc is False (i.e. personal watchlist edits).
-        self._build_max_buy_calc_section(parent=inner)
+        self._build_max_buy_calc_section(parent=parent)
 
         # Conditions
-        cond_frame = ttk.LabelFrame(inner, text="Alert Conditions", padding=10)
+        cond_frame = ttk.LabelFrame(parent, text="Alert Conditions", padding=10)
         cond_frame.pack(fill=tk.X, padx=10, pady=5)
 
         # Price under

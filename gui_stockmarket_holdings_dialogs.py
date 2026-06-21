@@ -54,9 +54,10 @@ class RecordPurchaseDialog:
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(f"Record Purchase: {type_name}")
         self.dialog.transient(parent.winfo_toplevel())
-        self.dialog.grab_set()
+
         self._create_widgets()
         fit_window(self.dialog, min_width=320)
+        self.dialog.grab_set()
     
     def _create_widgets(self):
         frame = ttk.Frame(self.dialog, padding=15)
@@ -166,9 +167,10 @@ class RecordSaleDialog:
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(f"Record Sale: {type_name}")
         self.dialog.transient(parent.winfo_toplevel())
-        self.dialog.grab_set()
+
         self._create_widgets()
         fit_window(self.dialog, min_width=320)
+        self.dialog.grab_set()
     
     def _create_widgets(self):
         frame = ttk.Frame(self.dialog, padding=15)
@@ -282,9 +284,10 @@ class HoldingDetailsDialog:
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(f"Holding Details: {type_name}")
         self.dialog.transient(parent.winfo_toplevel())
-        self.dialog.grab_set()
+
         self._create_widgets()
         fit_window(self.dialog, min_width=350)
+        self.dialog.grab_set()
     
     def _create_widgets(self):
         frame = ttk.Frame(self.dialog, padding=15)
